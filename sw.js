@@ -1,46 +1,46 @@
-/* LifeRPG service worker - cache on demand, lightweight */
-const CACHE = "liferpg-v1";
+// sw.js — cache-first PWA shell
+const CACHE = "liferpg-v8";
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./styles.css",
+  "./app.js",
+  "./charts.js",
+  "./db.js",
+  "./effects.js",
+  "./manifest.webmanifest",
+  "./assets/favicon.png",
+  "./assets/icon-192.png",
+  "./assets/icon-512.png",
+];
 
-self.addEventListener("install", (event) => {
-  // Precache only the shell that already exists
-  event.waitUntil(
-    caches.open(CACHE).then((c) =>
-      c.addAll([
-        "./",
-        "./index.html",
-        "./styles.css",
-        "./manifest.webmanifest"
-      ])
-    )
-  );
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
+  self.skipWaiting();
 });
 
-self.addEventListener("activate", (event) => {
-  event.waitUntil(
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+      Promise.all(keys.map((k) => (k !== CACHE ? caches.delete(k) : null)))
     )
   );
+  self.clients.claim();
 });
 
-self.addEventListener("fetch", (event) => {
-  const req = event.request;
-  const url = new URL(req.url);
-
-  // Only handle same-origin GETs
-  if (req.method !== "GET" || url.origin !== location.origin) return;
-
-  // For everything: try cache, then network; update cache in background
-  event.respondWith(
-    caches.match(req).then((cached) => {
-      const fetchPromise = fetch(req).then((netRes) => {
-        // Ignore opaque/error responses
-        if (netRes && netRes.ok) {
-          caches.open(CACHE).then((c) => c.put(req, netRes.clone()));
-        }
-        return netRes;
-      }).catch(() => cached); // offline fallback
-      return cached || fetchPromise;
+self.addEventListener("fetch", (e) => {
+  const { request } = e;
+  if (request.method !== "GET") return;
+  e.respondWith(
+    caches.match(request).then((cached) => {
+      if (cached) return cached;
+      return fetch(request)
+        .then((res) => {
+          const resClone = res.clone();
+          caches.open(CACHE).then((c) => c.put(request, resClone)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match("./index.html"));
     })
   );
 });
