@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- Lock the app feel; support iOS safe areas -->
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B0F1A" />
+  <title>LifeRPG</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/icon-192.png" />
+
+  <!-- Styles -->
+  <link rel="preload" href="styles.css" as="style" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>body{background:#0B0F1A;color:#E6E9F2;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;margin:0}</style>
+</head>
+<body>
+  <div id="app">
+    <!-- Milestone/banner -->
+    <div id="banner" class="banner hidden" role="status" aria-live="polite"></div>
+
+    <!-- Header / Hero -->
+    <header class="app-header">
+      <div class="hero">
+        <div class="points">
+          <div class="points-label">Points Today</div>
+          <div id="statPoints" class="points-value">0</div>
+          <!-- Daily Goal bar (we keep #xpFill so existing JS continues to animate width).
+               Ghost tick will be wired later in JS (span#goalGhostTick). -->
+          <div class="xpbar">
+            <div id="xpFill" style="width:0%"></div>
+            <span id="goalGhostTick" class="goal-ghost" title="Last week’s same weekday"></span>
+          </div>
+          <div id="goalText" class="goal-text muted" aria-live="polite"></div>
+        </div>
+        <div class="pills">
+          <button class="pill" id="pillStreak" data-nav="statsView" title="View stats">
+            <span class="emoji">🔥</span><span id="statStreak">0</span>
+          </button>
+          <button class="pill" id="pillCoins" title="Open Shop">
+            <span class="emoji">🪙</span><span id="statCoins">0</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main class="app-main">
+
+      <!-- HOME -->
+      <section id="homeView" class="view active" role="region" aria-label="Home">
+
+        <!-- Today’s Tasks (new; instances due today). Wired in next JS chunk. -->
+        <div class="card" id="todaysTasksCard">
+          <div class="card-head">
+            <h3>Today’s Tasks</h3>
+            <div class="row">
+              <button id="btnAddTodoInline" class="btn small">+ Add</button>
+              <button id="btnOverdueToggle" class="btn ghost small" title="Show/Hide overdue">Overdue</button>
+            </div>
+          </div>
+          <div id="todaysTasksList" class="list">
+            <div class="placeholder">You’re all caught up. Add a task for today or schedule one.</div>
+          </div>
+          <div id="overdueBlock" class="list hidden">
+            <div class="placeholder">No overdue tasks — nice.</div>
+          </div>
+        </div>
+
+        <!-- Daily Habits (new; binary or counter). Wired in next JS chunk. -->
+        <div class="card" id="habitsCard">
+          <div class="card-head">
+            <h3>Daily Habits</h3>
+            <button id="btnAddHabit" class="btn small">+ Add</button>
+          </div>
+          <div id="habitsList" class="list">
+            <div class="placeholder">No habits yet. Add 1–3 to start your streak.</div>
+          </div>
+        </div>
+
+        <!-- Daily Challenges (kept; works today) -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Daily Challenges</h3>
+            <!-- no reroll -->
+          </div>
+          <div id="dailyList" class="list three-cards">
+            <div class="placeholder">Your 3 challenges will appear here.</div>
+          </div>
+        </div>
+
+        <!-- Weekly Boss (kept; works today) -->
+        <div class="card" id="bossCard">
+          <div class="card-head"><h3>Weekly Boss</h3></div>
+          <div class="boss-wrap">
+            <canvas id="bossRing" width="220" height="220" aria-label="Weekly boss progress"></canvas>
+            <div id="bossGoals" class="boss-goals">
+              <div class="placeholder">Set a template in Manage → Boss.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Completed Today feed (kept; works today) -->
+        <div class="card" id="completedCard">
+          <div class="card-head"><h3>Completed Today</h3></div>
+          <div id="feedToday" class="list">
+            <div class="placeholder">When you complete tasks/challenges, they’ll appear here.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CALENDAR (new view; shell only for now) -->
+      <section id="calendarView" class="view" role="region" aria-label="Calendar">
+        <div class="card">
+          <div class="card-head row">
+            <div class="row">
+              <button id="calPrev" class="icon-btn" aria-label="Previous month">‹</button>
+              <h3 id="calTitle">Month YYYY</h3>
+              <button id="calNext" class="icon-btn" aria-label="Next month">›</button>
+            </div>
+            <button id="calToday" class="btn ghost small">Today</button>
+          </div>
+          <!-- Responsive month grid -->
+          <div id="monthHead" class="cal-head">
+            <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+          </div>
+          <div id="monthGrid" class="cal-grid">
+            <div class="placeholder">Calendar will render here.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STATS (kept; we’ll beautify later) -->
+      <section id="statsView" class="view" role="region" aria-label="Stats">
+        <div class="grid two">
+          <div class="card">
+            <div class="card-head"><h3>Streak</h3></div>
+            <div class="streak-wrap">
+              <div class="streak-badge"><span>🔥</span><span id="streakBig">0</span></div>
+              <div class="streak-meta">
+                <div>Best: <strong id="bestStreak">0</strong></div>
+                <div>Completions/week: <strong id="cmpWeek">0</strong></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>30-Day Points</h3></div>
+            <canvas id="bar30" width="600" height="260" aria-label="30 day points bar chart"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Calendar (90 days)</h3></div>
+          <div id="heatmap" class="heatmap" aria-label="calendar heatmap"></div>
+        </div>
+      </section>
+
+      <!-- MANAGE (kept for compatibility; we’ll merge Settings later) -->
+      <section id="manageView" class="view" role="region" aria-label="Manage">
+
+        <!-- Task Library (quick earners; currently your Tasks list) -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Task Library</h3>
+            <button id="btnAddTask" class="btn small">+ Add</button>
+          </div>
+          <div id="manageTasks" class="list admin">
+            <div class="placeholder">No items yet. Click “+ Add”.</div>
+          </div>
+        </div>
+
+        <!-- Challenge Pool -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Challenge Pool</h3>
+            <button id="btnAddChallenge" class="btn small">+ Add</button>
+          </div>
+          <div id="manageChallenges" class="list admin">
+            <div class="placeholder">No challenges yet. Click “+ Add”.</div>
+          </div>
+        </div>
+
+        <!-- Shop Items -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Shop</h3>
+            <button id="btnAddShop" class="btn small">+ Add</button>
+          </div>
+          <div id="manageShop" class="list admin">
+            <div class="placeholder">No rewards yet. Click “+ Add”.</div>
+          </div>
+        </div>
+
+        <!-- Weekly Boss editor -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Boss Quest (Weekly)</h3>
+            <button id="btnBossTemplate1" class="btn ghost small">Use “Momentum”</button>
+            <button id="btnBossTemplate2" class="btn ghost small">Use “Social”</button>
+          </div>
+          <div id="manageBoss" class="list admin">
+            <div class="placeholder">Apply a template to generate goals.</div>
+          </div>
+        </div>
+
+        <!-- Preferences (we’ll wire dailyGoal & pointsPerCoin later) -->
+        <div class="card">
+          <div class="card-head"><h3>Preferences</h3></div>
+          <div class="form">
+            <label>Daily Goal (points)
+              <input id="inpDailyGoal" type="number" min="10" max="1000" value="60">
+            </label>
+            <label>Points per Coin
+              <input id="inpPPC" type="number" min="10" max="1000" value="100">
+            </label>
+            <label class="row">
+              <input id="chkHaptics" type="checkbox" checked>
+              <span>Haptics</span>
+            </label>
+            <p class="muted">Reset time is midnight (local).</p>
+          </div>
+        </div>
+
+        <!-- Data -->
+        <div class="card">
+          <div class="card-head"><h3>Data</h3></div>
+          <div class="row wrap">
+            <button id="btnExport" class="btn ghost">Export JSON</button>
+            <label class="file">
+              <input id="fileImport" type="file" accept="application/json">
+              <span class="btn">Import JSON</span>
+            </label>
+            <button id="btnWipe" class="btn danger">Wipe All Data</button>
+          </div>
+          <p class="muted">Made by <strong>Will Read</strong>.</p>
+        </div>
+      </section>
+
+      <!-- (Kept for now so current JS doesn’t break; we’ll retire this in a later chunk) -->
+      <section id="settingsView" class="view" role="region" aria-label="Settings" style="display:none">
+        <div class="card"><div class="card-head"><h3>Legacy</h3></div>
+          <p class="muted">Settings moved into Manage → Preferences.</p>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Fixed Bottom Tab Bar (icons only). Center ➕ opens Quick Add. -->
+    <nav class="tabbar" role="tablist" aria-label="Primary">
+      <button class="tab active" data-target="homeView" aria-selected="true" aria-label="Home">🏠</button>
+      <button class="tab" data-target="calendarView" aria-label="Calendar">📅</button>
+
+      <button id="tabAdd" class="tab-plus" aria-label="Quick Add">+</button>
+
+      <button class="tab" data-target="statsView" aria-label="Stats">📈</button>
+      <button class="tab" data-target="manageView" aria-label="Manage">🛠️</button>
+    </nav>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <!-- Modal (forms) -->
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="modalTitle">Modal</h3>
+          <button id="modalClose" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="modalBody" class="modal-body"></div>
+        <div class="modal-actions">
+          <button id="modalCancel" class="btn ghost">Cancel</button>
+          <button id="modalOk" class="btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Add Drawer -->
+    <div id="drawerQuickAdd" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="qaTitle">
+      <div class="drawer-card">
+        <div class="drawer-head">
+          <h3 id="qaTitle">Quick Add</h3>
+          <button id="drawerQuickClose" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="quickFavsRow" class="quick-row hidden">
+          <div class="quick-title">Favorites</div>
+          <div id="quickFavs" class="quick-chips"></div>
+        </div>
+        <div class="quick-title">All Tasks</div>
+        <div id="quickTaskList" class="quick-grid">
+          <div class="placeholder">Add tasks in Manage → Task Library, then tap ➕</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shop Drawer -->
+    <div id="drawerShop" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="shopTitle">
+      <div class="drawer-card">
+        <div class="drawer-head">
+          <h3 id="shopTitle">Shop</h3>
+          <button id="drawerShopClose" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="shopDrawerList" class="shop-drawer-list">
+          <div class="placeholder">No rewards yet. Add some in Manage → Shop.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script type="module">import "./app.js";</script>
+  <script>
+    // SW bootstrap (kept)
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+
+    // Fallback tab wiring (center "+" is not a tab; wired in app.js)
+    (function(){
+      const tabs = document.querySelectorAll('.tabbar .tab');
+      const views = document.querySelectorAll('.view');
+      tabs.forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          tabs.forEach(b=>b.classList.remove('active'));
+          btn.classList.add('active');
+          const id = btn.getAttribute('data-target');
+          views.forEach(v=>v.classList.toggle('active', v.id===id));
+          const el = document.getElementById(id);
+          if (el) { el.setAttribute('tabindex','-1'); el.focus({preventScroll:true}); }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
