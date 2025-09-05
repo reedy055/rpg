@@ -90,10 +90,7 @@ h3{font-size:20px; margin:0}
 .app-header.goal-met .points-value{filter: drop-shadow(0 0 16px rgba(83,255,136,.25))}
 .app-header.goal-met .xpbar{background:#173325}
 .app-header.goal-met .xpbar > div{background: linear-gradient(90deg, var(--success), #9DFFBE)}
-@keyframes pulseGlow {
-  0% { box-shadow: 0 0 0 0 rgba(83,255,136,.35) }
-  100% { box-shadow: 0 0 0 16px rgba(83,255,136,0) }
-}
+@keyframes pulseGlow { 0% { box-shadow: 0 0 0 0 rgba(83,255,136,.35) } 100% { box-shadow: 0 0 0 16px rgba(83,255,136,0) } }
 .app-header.goal-met .points-value{animation: pulseGlow 1.2s ease-out 1}
 
 /* ============ Cards / Tiles ============ */
@@ -144,6 +141,14 @@ h3{font-size:20px; margin:0}
 /* Tab-like buttons (Quick Add tabs) */
 .btn.is-selected{background:var(--primary); border-color:var(--primary); color:#081126}
 .btn.ghost.is-selected{background:var(--primary); border-color:var(--primary); color:#081126}
+
+/* Icon button (prev/next, closes, kebab) */
+.icon-btn{
+  background:transparent; color:var(--text);
+  border:1px solid var(--glass-border); border-radius:10px;
+  padding:6px 10px; cursor:pointer; font-weight:800
+}
+.icon-btn:active{transform:scale(.98)}
 
 /* ============ Inputs / Form ============ */
 .form{display:grid; gap:12px}
@@ -245,7 +250,7 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
 .modal-actions{display:flex; gap:10px; justify-content:flex-end; padding-top:6px}
 .file input[type=file]{display:none}
 
-/* ============ Drawers (Quick Add / Shop) ============ */
+/* ============ Drawers (Quick Add / Shop / Day Details) ============ */
 .drawer{position:fixed; inset:0; display:flex; align-items:flex-end; justify-content:center;
   background: rgba(0,0,0,.45); z-index:55}
 .drawer.hidden{display:none}
@@ -283,7 +288,7 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
 
 /* Weekday chips (toggle) */
 #qaWeekdays .btn{border-color:rgba(255,255,255,.1)}
-#qaWeekdays .btn.active{background:var(--primary); border-color:var(--primary); color:#081126}
+#qaWeekdays .btn.active, #qaWeekdays .btn.is-selected{background:var(--primary); border-color:var(--primary); color:#081126}
 
 /* ============ Weekly Boss ============ */
 .boss-wrap{display:flex; gap:16px; align-items:center; flex-wrap:wrap}
@@ -298,6 +303,15 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
 .boss-goal .meta{font-size:12px; color:var(--muted)}
 .boss-bar{height:8px; border-radius:999px; background:#19234a; overflow:hidden; margin-top:8px}
 .boss-bar > div{height:100%; width:0%; background: linear-gradient(90deg, var(--primary), var(--secondary))}
+
+/* Boss mini counter (+/−) */
+.counter-mini{display:flex; gap:8px; align-items:center}
+.counter-mini .num{min-width:28px; text-align:center; font-weight:800}
+.counter-mini button{
+  width:28px; height:28px; border-radius:50%;
+  background:#17234a; border:1px solid var(--border); color:var(--text); font-weight:900; cursor:pointer
+}
+.counter-mini button:active{transform:scale(.96)}
 
 /* ============ Completed feed ============ */
 #completedCard .list{gap:8px}
@@ -314,7 +328,7 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
   border-radius:999px; padding:6px 10px; cursor:pointer; font-weight:700; font-size:12px}
 .chip-undo:active{transform:scale(.98)}
 
-/* ============ Today’s Tasks (today/overdue) ============ */
+/* ============ Today’s Tasks (today only) ============ */
 .todo-row{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
   background: linear-gradient(180deg, #0F1832, #0C142B);
@@ -333,11 +347,12 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
 /* done state for todos */
 .todo-row.done{background: linear-gradient(180deg, #10271C, #0B1E16); border-color:#1e4b36; box-shadow: 0 0 0 1px rgba(83,255,136,.16)}
 .todo-row.done .todo-title::after{content:" ✓"; color:var(--success)}
-@keyframes flashSuccess{
-  0%{box-shadow: 0 0 0 0 rgba(83,255,136,.35)}
-  100%{box-shadow: 0 0 0 14px rgba(83,255,136,0)}
-}
+@keyframes flashSuccess{ 0%{box-shadow: 0 0 0 0 rgba(83,255,136,.35)} 100%{box-shadow: 0 0 0 14px rgba(83,255,136,0)} }
 .success-flash{animation: flashSuccess .8s ease-out 1}
+
+/* Today card success accent */
+#todaysTasksCard.success{border-color:#1e4b36; box-shadow: 0 0 0 1px rgba(83,255,136,.18)}
+#todaysTasksCard.success .card-head h3{color:#9DFFBE}
 
 /* ============ Daily Habits ============ */
 .habit-row{
@@ -374,8 +389,9 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
   position:relative; min-height:84px;
   background: linear-gradient(180deg, #0F1630, #0B1126);
   border:1px solid var(--border); border-radius:12px; padding:8px;
-  display:flex; flex-direction:column; gap:6px
+  display:flex; flex-direction:column; gap:6px; cursor:pointer; transition: transform .06s ease, border-color .15s ease;
 }
+.cal-day:hover{transform:translateY(-1px); border-color:var(--glass-border)}
 .cal-day.out{opacity:.45}
 .cal-day .date{font-size:13px; color:var(--muted); font-weight:700}
 .cal-day.today{box-shadow: 0 0 0 1px rgba(91,140,255,.45), 0 0 24px rgba(91,140,255,.18)}
@@ -385,6 +401,44 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
 .task-dot{width:6px; height:6px; border-radius:50%; background:#2a3a6f}
 .task-dot.done{background:var(--success)}
 .pts-small{position:absolute; right:8px; bottom:8px; font-size:12px; color:var(--muted)}
+
+/* ============ Stats: "This Week" micro chart ============ */
+#weekChart{width:100%; height:auto; display:block}
+#weekDelta{
+  display:inline-block; margin-top:6px; font-size:12px; padding:6px 10px; border-radius:999px;
+  border:1px solid var(--glass-border); background:transparent
+}
+#weekDelta.pos{color:#9DFFBE; border-color:#285c45; background:rgba(83,255,136,.08)}
+#weekDelta.neg{color:#FF9D9D; border-color:#6b3438; background:rgba(255,107,107,.08)}
+
+/* ===== KPI chips (Stats) ===== */
+.kpis{
+  display:grid; grid-template-columns: repeat(4, 1fr);
+  gap:16px; margin-bottom:16px;
+}
+@media (max-width:900px){ .kpis{grid-template-columns: repeat(2, 1fr)} }
+.kpi{
+  background: linear-gradient(180deg, #111A33, #0D142A);
+  border:1px solid var(--border);
+  border-radius: 16px;
+  padding:12px;
+  box-shadow: var(--shadow);
+}
+.kpi-label{color:var(--muted); font-size:12px}
+.kpi-value{font-weight:800; font-size:20px; margin-top:2px}
+.kpi-delta{margin-top:4px; font-size:12px; color:var(--muted)}
+.kpi-delta.pos{color:#9DFFBE}
+.kpi-delta.neg{color:#FF9D9D}
+
+/* ============ Shop Drawer items ============ */
+.shop-drawer-list{display:flex; flex-direction:column; gap:10px}
+.shop-card{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  background: linear-gradient(180deg, #0F1630, #0B1126);
+  border:1px solid var(--border); border-radius:12px; padding:12px
+}
+.shop-title{font-weight:800}
+.shop-cost{font-size:12px; color:var(--muted)}
 
 /* ============ Minor helpers ============ */
 .row{display:flex; gap:10px; align-items:center}
