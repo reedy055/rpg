@@ -444,3 +444,30 @@ input[type="text"],input[type="number"],input[type="time"],input[type="date"]{
 .row{display:flex; gap:10px; align-items:center}
 .wrap{flex-wrap:wrap}
 .muted{color:var(--muted)}
+
+/* --- Fix: drawer scroll + backdrop usability --- */
+.drawer-card{ max-height: 86vh; overflow: auto; }
+
+/* --- Quick Add: clearer selected tab/chips --- */
+.btn.is-selected, .btn.ghost.is-selected{ 
+  background: var(--primary) !important; 
+  border-color: var(--primary) !important; 
+  color:#081126 !important; 
+}
+#qaWeekdays .btn.active{ 
+  background: var(--primary) !important; 
+  border-color: var(--primary) !important; 
+  color:#081126 !important; 
+  box-shadow: 0 0 0 2px rgba(91,140,255,.18);
+}
+
+/* --- Boss goal goes green on completion (match “done” tiles) --- */
+.boss-goal.done{
+  background: linear-gradient(180deg, #10271C, #0B1E16);
+  border-color:#1e4b36;
+  box-shadow: 0 0 0 1px rgba(83,255,136,.16);
+}
+.boss-goal.done .label::after{ content:" ✓"; color:var(--success) }
+
+/* --- Boss +/- look consistent with counters elsewhere --- */
+.boss-goal .counter{ margin-top:8px }
