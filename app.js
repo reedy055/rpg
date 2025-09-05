@@ -1,16 +1,17 @@
-// app.js — v4.1
-// New: Quick-Add tabs (Library + New Today’s Task with weekday recurrence), Daily Challenges Count setting,
-// Weekly Boss auto-pick settings, header goal-met visual, per-habit 30d history + streak, lifetime points KPI.
-// Removed: time field from tasks UI/logic; no Stats heatmap call.
-// Kept: Challenges, Shop, Export/Import, Power Hour, Confetti.
+// app.js — v4.2
+// Updates:
+// - Today’s Tasks auto-clear on day rollover (no carry-over).
+// - Weekly Boss: auto-pick from Library using Settings; resets Monday 00:00 (Sun night). + / – tally controls.
+// - Calendar: tap a day to open Day Detail modal (points, coins, habits, tasks, challenges).
+// - Stats: new "This Week" card with a 7-bar mini chart.
+// - Quick-Add weekday chips fixed (.is-selected) and applied.
+// - Manage: dynamic "Recurring Tasks" card to edit/delete weekly rules.
 
 import { loadState, saveState, clearAll, exportJSON, importJSON } from "./db.js";
 import { renderBarChart } from "./charts.js";
 import { confettiBurst } from "./effects.js";
 
-/* =========================
-   Tiny utilities
-========================= */
+/* ---------------- Utils ---------------- */
 const $ = (s, el=document)=>el.querySelector(s);
 const $$ = (s, el=document)=>Array.from(el.querySelectorAll(s));
 const fmt = n => new Intl.NumberFormat().format(n);
@@ -18,7 +19,7 @@ const uuid = ()=> (crypto.randomUUID ? crypto.randomUUID() : (Math.random().toSt
 const clamp = (n,min,max)=>Math.max(min,Math.min(max,n));
 const isoDay = (d)=>d.toISOString().slice(0,10);
 const todayStr = ()=>isoDay(new Date());
-const startOfWeekISO = (yyyy_mm_dd)=>{ // Monday start
+const startOfWeekISO = (yyyy_mm_dd)=>{ // Monday start (Sun night reset)
   const d = new Date(yyyy_mm_dd+"T00:00:00");
   const wd = d.getDay(); // 0..6 (Sun..Sat)
   const delta = (wd===0 ? -6 : 1-wd);
@@ -27,106 +28,78 @@ const startOfWeekISO = (yyyy_mm_dd)=>{ // Monday start
 };
 const addDaysStr = (yyyy_mm_dd, days)=>{ const d=new Date(yyyy_mm_dd+"T00:00:00"); d.setDate(d.getDate()+days); return isoDay(d); };
 
-function banner(msg) {
-  const b = $("#banner"); if (!b) return;
-  b.textContent = msg; b.classList.remove("hidden");
-  requestAnimationFrame(()=>{ b.classList.add("show"); setTimeout(()=>{ b.classList.remove("show"); setTimeout(()=>b.classList.add("hidden"), 260); }, 1200); });
-}
-function toast(msg) {
-  const t = $("#toast"); if (!t) return;
-  t.textContent = msg; t.classList.add("show");
-  setTimeout(()=>t.classList.remove("show"), 1800);
-}
+function toast(msg){ const t=$("#toast"); if(!t) return; t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"), 1800); }
+function banner(msg){ const b=$("#banner"); if(!b) return; b.textContent=msg; b.classList.remove("hidden"); requestAnimationFrame(()=>{ b.classList.add("show"); setTimeout(()=>{ b.classList.remove("show"); setTimeout(()=>b.classList.add("hidden"), 260); }, 1200); }); }
 function vibrate(ms=40){ try{ if(state.settings.haptics && navigator.vibrate) navigator.vibrate(ms); }catch{} }
 
-/* =========================
-   Default State v4.1
-========================= */
-function defaultStateV41() {
+/* -------------- Default State -------------- */
+function defaultState() {
   return {
-    version: 41,
+    version: 42,
     settings: {
       dailyGoal: 60,
       pointsPerCoin: 100,
       haptics: true,
-      resetHour: 0,               // midnight
-      dailyChallengesCount: 3,    // NEW
-      bossTasksPerWeek: 5,        // NEW
-      bossTimesMin: 2,            // NEW
-      bossTimesMax: 5             // NEW
+      resetHour: 0,               // midnight local
+      dailyChallengesCount: 3,
+      bossTasksPerWeek: 5,
+      bossTimesMin: 2,
+      bossTimesMax: 5
     },
     profile: { coins: 0, bestStreak: 0 },
     streak: { current: 0 },
-
     today: {
       day: null,
       points: 0,
       unconvertedPoints: 0,
       lastMilestone: 0,
-      habitsStatus: {}            // habitId -> { tally:number, done:boolean }
+      habitsStatus: {}
     },
-
     habits: [],                   // {id,name,type:"binary"|"counter",targetPerDay,pointsOnComplete,active}
     todos: [],                    // {id,name,dueDay,points,done,ruleId?}
     todoRules: [],                // {id,name,points,recurrence:{freq:"weekly",byWeekday:number[]},anchorDay}
-
     library: [],                  // {id,name,points,cooldownHours?,lastDoneAt?,active}
     challenges: [],
     assigned: {},                 // day -> [challengeIds]
-
     shop: [],
     powerHour: { active:false, endsAt:null },
-
     progress: {},                 // day -> { points, coinsEarned, tasksDone, habitsDone, challengesDone }
     logs: [],                     // {ts,type:'habit'|'todo'|'library'|'challenge'|'purchase', id,name, points?, cost?, day}
-
-    weeklyBoss: {
-      weekStartDay: null,
-      goals: [],                 // {id,label,target,tally,linkedTaskIds:[]}
-      completed: false
-    },
-
+    weeklyBoss: { weekStartDay:null, goals:[], completed:false },
     economy: { repairsThisMonth: 0 }
   };
 }
 
-/* =========================
-   Migration (<=4.0 -> 4.1)
-========================= */
-function migrateToV41(old) {
-  if (!old) return defaultStateV41();
-  if (old.version >= 41) return old;
+/* -------------- Migration -------------- */
+function migrate(old){
+  if (!old) return defaultState();
+  if (old.version >= 42) return old;
 
-  // upgrade from v4
-  const s = defaultStateV41();
+  // base
+  const s = defaultState();
 
-  // copy easy fields
+  // carry forward fields safely
+  Object.assign(s.settings, old.settings||{});
+  s.settings.dailyChallengesCount ??= 3;
+  s.settings.bossTasksPerWeek ??= 5;
+  s.settings.bossTimesMin ??= 2;
+  s.settings.bossTimesMax ??= 5;
+
   s.profile.coins = old.profile?.coins ?? 0;
   s.profile.bestStreak = old.profile?.bestStreak ?? 0;
   s.streak.current = old.streak?.current ?? 0;
 
-  // settings
-  s.settings.dailyGoal = old.settings?.dailyGoal ?? s.settings.dailyGoal;
-  s.settings.pointsPerCoin = old.settings?.pointsPerCoin ?? s.settings.pointsPerCoin;
-  s.settings.haptics = old.settings?.haptics ?? s.settings.haptics;
-  // new ones have sensible defaults
-  if (typeof old.settings?.dailyChallengesCount === "number") s.settings.dailyChallengesCount = old.settings.dailyChallengesCount;
-
-  // carry models
   s.habits = old.habits||[];
-  s.todos = (old.todos||[]).map(t=>({ ...t, dueTime: undefined })); // strip time
-  // normalize rules to weekly-byWeekday
+  s.todos = (old.todos||[]).map(t=>({ id:t.id||uuid(), name:t.name, dueDay:t.dueDay, points:t.points, done:!!t.done, ruleId:t.ruleId }));
   s.todoRules = (old.todoRules||[]).map(r=>{
-    const rec = r.recurrence||{};
-    let by = rec.byWeekday;
-    if (!by) {
-      // map daily→all 7; weekly (single) keep; custom fallback→empty
-      if (rec.freq==="daily") by = [1,2,3,4,5,6,0]; // Mon..Sun
-      else if (rec.freq==="weekly") by = rec.byWeekday || [];
-      else by = [];
+    const rec=r.recurrence||{};
+    let by=rec.byWeekday;
+    if (!by){
+      if (rec.freq==="daily") by=[1,2,3,4,5,6,0]; else if(rec.freq==="weekly") by=rec.byWeekday||[]; else by=[];
     }
-    return { id:r.id||uuid(), name:r.name, points:r.points, anchorDay:r.anchorDay||old.today?.day||todayStr(), recurrence:{ freq:"weekly", byWeekday: by } };
+    return { id:r.id||uuid(), name:r.name, points:r.points, anchorDay:r.anchorDay||old.today?.day||todayStr(), recurrence:{freq:"weekly",byWeekday:by} };
   });
+
   s.library = old.library||[];
   s.challenges = old.challenges||[];
   s.assigned = old.assigned||{};
@@ -135,48 +108,42 @@ function migrateToV41(old) {
   s.progress = old.progress||{};
   s.logs = old.logs||[];
 
-  // boss
   s.weeklyBoss.weekStartDay = old.weeklyBoss?.weekStartDay || startOfWeekISO(todayStr());
   s.weeklyBoss.goals = (old.weeklyBoss?.goals||[]).map(g=>({ id:g.id||uuid(), label:g.label, target:g.target||0, tally:g.tally||0, linkedTaskIds:g.linkedTaskIds||[] }));
   s.weeklyBoss.completed = !!old.weeklyBoss?.completed;
 
-  // today
   s.today.day = old.today?.day===todayStr()? old.today.day : todayStr();
   s.today.points = old.today?.points||0;
   s.today.unconvertedPoints = old.today?.unconvertedPoints||0;
   s.today.lastMilestone = old.today?.lastMilestone||0;
   s.today.habitsStatus = old.today?.habitsStatus||{};
 
-  s.version = 41;
+  s.version = 42;
   return s;
 }
 
-/* =========================
-   Global state
-========================= */
+/* -------------- State -------------- */
 let state = null;
 
-/* =========================
-   Boot
-========================= */
+/* -------------- Boot -------------- */
 window.addEventListener("DOMContentLoaded", init);
 
-async function init() {
-  // UI click wiring
+async function init(){
+  // Header pills
   $("#pillStreak")?.addEventListener("click", ()=> switchView("statsView"));
   $("#pillCoins")?.addEventListener("click", openShopDrawer);
 
-  // Home buttons
+  // Home
   $("#btnAddTodoInline")?.addEventListener("click", ()=> openTodoModal());
-  $("#btnOverdueToggle")?.addEventListener("click", ()=> $("#overdueBlock").classList.toggle("hidden"));
+  $("#btnOverdueToggle")?.addEventListener("click", ()=> $("#overdueBlock")?.classList.toggle("hidden"));
   $("#btnAddHabit")?.addEventListener("click", ()=> openHabitModal());
 
-  // Manage CRUD
+  // Manage
   $("#btnAddTask").addEventListener("click", ()=> openLibraryModal());
   $("#btnAddChallenge").addEventListener("click", ()=> openChallengeModal());
   $("#btnAddShop").addEventListener("click", ()=> openShopItemModal());
 
-  // Preferences (including new fields)
+  // Preferences
   $("#inpDailyGoal").addEventListener("change", onPrefChange);
   $("#inpPPC").addEventListener("change", onPrefChange);
   $("#chkHaptics").addEventListener("change", onPrefChange);
@@ -190,10 +157,6 @@ async function init() {
   $("#fileImport").addEventListener("change", onImport);
   $("#btnWipe").addEventListener("click", onWipe);
 
-  // Boss templates (kept for now)
-  $("#btnBossTemplate1").addEventListener("click", ()=> applyBossTemplate("momentum"));
-  $("#btnBossTemplate2").addEventListener("click", ()=> applyBossTemplate("social"));
-
   // Calendar nav
   $("#calPrev").addEventListener("click", ()=> changeCalendarMonth(-1));
   $("#calNext").addEventListener("click", ()=> changeCalendarMonth(1));
@@ -203,71 +166,71 @@ async function init() {
   $("#tabAdd").addEventListener("click", openQuickAdd);
   $("#drawerQuickClose").addEventListener("click", closeQuickAdd);
   $("#drawerQuickAdd").addEventListener("click", (e)=>{ if(e.target.id==="drawerQuickAdd") closeQuickAdd(); });
-  // Quick Add tabs + weekday chips
   $("#qaTabLib").addEventListener("click", ()=> qaShowTab("lib"));
   $("#qaTabToday").addEventListener("click", ()=> qaShowTab("today"));
   $$("#qaWeekdays .btn").forEach(b=>{
-    b.addEventListener("click", ()=> b.classList.toggle("active"));
+    b.addEventListener("click", ()=> b.classList.toggle("is-selected"));
   });
   $("#qaCreateTodoBtn").addEventListener("click", onCreateQuickTodo);
 
-  // Shop drawer
-  $("#drawerShopClose").addEventListener("click", closeShopDrawer);
-  $("#drawerShop").addEventListener("click", (e)=>{ if(e.target.id==="drawerShop") closeShopDrawer(); });
+  // Hide legacy boss template buttons if present
+  $("#btnBossTemplate1")?.classList.add("hidden");
+  $("#btnBossTemplate2")?.classList.add("hidden");
 
   // Load + migrate
   const loaded = await loadState();
-  state = migrateToV41(loaded);
+  state = migrate(loaded);
 
-  // Day/Week init
-  ensureDayRollover();           // new day, assigns challenges, generates recurring todos
-  ensureWeeklyBoss();            // new week autopick if needed
+  // Day/Week engines
+  ensureDayRollover();        // resets today, assigns challenges, clears past todos, generates recurring
+  ensureWeeklyBoss();         // auto-pick if new week
 
-  // Initial render + save
   renderAll();
   await saveState(state);
 
-  // Header live updates (power hour countdown / goal-met toggle)
-  setInterval(()=> { renderHeader(); }, 1000);
+  // Header live
+  setInterval(()=> renderHeader(), 1000);
 }
 
-/* =========================
-   Day & Week engines
-========================= */
+/* -------------- Day/Week engines -------------- */
 function ensureDayRollover(){
   const gd = todayStr();
   if (!state.today.day) {
     state.today.day = gd;
-    ensureDailyAssignments();
+    ensureDailyAssignments(true);
     generateRecurringTodosForDay(gd);
+    // purge older todos just in case
+    state.todos = state.todos.filter(t=>t.dueDay>=gd);
     return;
   }
   if (gd !== state.today.day) {
-    // yesterday streak evaluation
     const y = state.today.day;
+
+    // compute yesterday streak: require all habits done OR any activity?
     const yAllHabitsDone = areAllHabitsDoneForDay(y);
-    const hadActivity = (state.progress[y]?.points || 0) > 0 || yAllHabitsDone;
     if (yAllHabitsDone) {
       state.streak.current = (state.streak.current||0) + 1;
       state.profile.bestStreak = Math.max(state.profile.bestStreak||0, state.streak.current);
-    } else if (hadActivity) {
-      state.streak.current = 0;
     } else {
       state.streak.current = 0;
     }
 
-    // reset today
+    // new day
     state.today.day = gd;
     state.today.points = 0;
     state.today.unconvertedPoints = 0;
     state.today.lastMilestone = 0;
     state.today.habitsStatus = {};
 
-    ensureDailyAssignments(true);     // reassign fresh for today using setting
+    // assign
+    ensureDailyAssignments(true);
     generateRecurringTodosForDay(gd);
+
+    // **no carry-over**: purge all todos with dueDay < today
+    state.todos = state.todos.filter(t=>t.dueDay>=gd);
   }
 
-  // week boundary check (run here too)
+  // weekly boss boundary (Mon 00:00)
   ensureWeeklyBoss();
 }
 
@@ -292,16 +255,13 @@ function ensureDailyAssignments(force=false){
 }
 
 function generateRecurringTodosForDay(dayStr){
-  const weekday = new Date(dayStr+"T00:00:00").getDay(); // 0..6 Sun..Sat
+  const weekday = new Date(dayStr+"T00:00:00").getDay(); // 0..6
   for (const r of state.todoRules) {
-    const rec = r.recurrence||{};
-    if (rec.freq!=="weekly") continue;
-    const due = (rec.byWeekday||[]).includes(weekday);
-    if (due) {
-      const exists = state.todos.some(t=>t.ruleId===r.id && t.dueDay===dayStr);
-      if (!exists) {
-        state.todos.push({ id: uuid(), name:r.name, dueDay:dayStr, points:r.points, done:false, ruleId:r.id });
-      }
+    const due = (r.recurrence?.byWeekday||[]).includes(weekday);
+    if (!due) continue;
+    const exists = state.todos.some(t=>t.ruleId===r.id && t.dueDay===dayStr);
+    if (!exists) {
+      state.todos.push({ id: uuid(), name:r.name, dueDay:dayStr, points:r.points, done:false, ruleId:r.id });
     }
   }
 }
@@ -311,49 +271,38 @@ function ensureWeeklyBoss(){
   const weekStart = startOfWeekISO(today);
   if (state.weeklyBoss.weekStartDay === weekStart && state.weeklyBoss.goals?.length) return;
 
-  // Auto-pick goals for the week based on settings
   const want = clamp(state.settings.bossTasksPerWeek ?? 5, 1, 10);
   const minT = clamp(state.settings.bossTimesMin ?? 2, 1, 14);
   const maxT = clamp(state.settings.bossTimesMax ?? 5, minT, 14);
 
   const tasks = state.library.filter(t=>t.active!==false);
-  if (tasks.length === 0) {
-    state.weeklyBoss.weekStartDay = weekStart;
-    state.weeklyBoss.goals = [];
-    state.weeklyBoss.completed = false;
-    return;
-  }
+  const goals = [];
 
-  // weight by last week usage (light bias) so underused tasks surface
-  const lastWeek = [];
-  for(let i=0;i<7;i++){ lastWeek.push(addDaysStr(weekStart, -1 - i)); }
-  const counts = new Map();
-  for(const l of state.logs){
-    if(l.type!=='library') continue;
-    if (lastWeek.includes(l.day)) counts.set(l.id, (counts.get(l.id)||0)+1);
+  if (tasks.length){
+    // Light weighting by last week's usage — surface underused first
+    const lastWeek = [];
+    for(let i=0;i<7;i++){ lastWeek.push(addDaysStr(weekStart, -1 - i)); }
+    const counts = new Map();
+    for(const l of state.logs){
+      if(l.type!=='library') continue;
+      if (lastWeek.includes(l.day)) counts.set(l.id, (counts.get(l.id)||0)+1);
+    }
+    const pool = tasks.slice().sort((a,b)=>(counts.get(a.id)||0)-(counts.get(b.id)||0)); // ascending
+    const bag = pool.slice();
+    while(goals.length < Math.min(want, bag.length)){
+      const i = Math.floor(Math.random()*bag.length);
+      const t = bag.splice(i,1)[0];
+      const times = Math.floor(Math.random()*(maxT - minT + 1)) + minT;
+      goals.push({ id: uuid(), label: t.name, target: times, tally: 0, linkedTaskIds: [t.id] });
+    }
   }
-  const pool = tasks.slice().sort((a,b)=>(counts.get(a.id)||0)-(counts.get(b.id)||0)); // ascending
-
-  const chosen = [];
-  const bag = pool.slice();
-  while(chosen.length < Math.min(want, bag.length)){
-    const i = Math.floor(Math.random()*bag.length);
-    chosen.push(bag.splice(i,1)[0]);
-  }
-
-  const goals = chosen.map(t=>{
-    const times = Math.floor(Math.random()*(maxT - minT + 1)) + minT;
-    return { id: uuid(), label: `${t.name}`, target: times, tally: 0, linkedTaskIds: [t.id] };
-  });
 
   state.weeklyBoss.weekStartDay = weekStart;
   state.weeklyBoss.goals = goals;
   state.weeklyBoss.completed = false;
 }
 
-/* =========================
-   Render orchestrator
-========================= */
+/* -------------- Render orchestrator -------------- */
 function renderAll(){
   renderHeader();
   renderHome();
@@ -362,9 +311,7 @@ function renderAll(){
   renderManage();
 }
 
-/* =========================
-   Header (points, goal bar, countdown)
-========================= */
+/* -------------- Header -------------- */
 function renderHeader(){
   $("#statPoints").textContent = fmt(state.today.points||0);
   $("#statCoins").textContent = fmt(state.profile.coins||0);
@@ -381,11 +328,10 @@ function renderHeader(){
   const ghostPct = clamp(Math.round((ghostPts/goal)*100), 0, 100);
   $("#goalGhostTick").style.left = ghostPct+"%";
 
-  // Header success class when goal met
-  const header = $(".app-header");
-  header.classList.toggle("goal-met", pct >= 100);
+  // Success class when goal met
+  $(".app-header").classList.toggle("goal-met", pct >= 100);
 
-  // Label + power hour countdown
+  // Label + PowerHour
   let label = `${state.today.points||0} / ${goal} pts`;
   if (state.powerHour?.active && state.powerHour.endsAt) {
     const ms = Date.parse(state.powerHour.endsAt) - Date.now();
@@ -394,15 +340,13 @@ function renderHeader(){
       const s = Math.max(0, Math.floor((ms%60000)/1000));
       label += ` • ⚡ ${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
     } else {
-      state.powerHour.active = false; state.powerHour.endsAt = null;
+      state.powerHour.active=false; state.powerHour.endsAt=null;
     }
   }
   $("#goalText").textContent = label;
 }
 
-/* =========================
-   HOME: Today’s Tasks, Habits, Challenges, Boss, Feed
-========================= */
+/* -------------- HOME -------------- */
 function renderHome(){
   renderTodaysTasks();
   renderHabits();
@@ -411,14 +355,13 @@ function renderHome(){
   renderCompletedFeed();
 }
 
-/* ---------- Today’s Tasks ---------- */
+/* Today’s Tasks */
 function renderTodaysTasks(){
   const list = $("#todaysTasksList"); list.innerHTML="";
-  const overdue = $("#overdueBlock"); overdue.innerHTML="";
+  const overdue = $("#overdueBlock"); if (overdue) overdue.innerHTML="";
 
   const today = state.today.day;
   const todays = state.todos.filter(t=>t.dueDay===today).sort((a,b)=> a.name.localeCompare(b.name));
-  const overdueList = state.todos.filter(t=>!t.done && t.dueDay < today).sort((a,b)=> a.dueDay.localeCompare(b.dueDay));
 
   if (todays.length===0) {
     const d = document.createElement("div"); d.className="placeholder";
@@ -427,41 +370,20 @@ function renderTodaysTasks(){
   } else {
     for (const t of todays) list.appendChild(todoRow(t));
   }
-
-  if (overdueList.length===0) {
-    const d = document.createElement("div"); d.className="placeholder";
-    d.textContent="No overdue tasks — nice.";
-    overdue.appendChild(d);
-  } else {
-    for (const t of overdueList) {
-      const wrap = document.createElement("div"); wrap.className="overdue";
-      wrap.appendChild(todoRow(t));
-      overdue.appendChild(wrap);
-    }
-  }
 }
 function todoRow(t){
   const row = document.createElement("div"); row.className="todo-row"; if (t.done) row.classList.add("done");
   const left = document.createElement("div"); left.className="todo-left";
   const title = document.createElement("div"); title.className="todo-title"; title.textContent = t.name;
-  const sub = document.createElement("div"); sub.className="todo-sub";
-  sub.textContent = `${t.dueDay} • +${t.points} pts`;
+  const sub = document.createElement("div"); sub.className="todo-sub"; sub.textContent = `${t.dueDay} • +${t.points} pts`;
   left.appendChild(title); left.appendChild(sub);
 
   const right = document.createElement("div"); right.className="todo-right";
-  if (t.dueDay < state.today.day && !t.done) {
-    const b = document.createElement("div"); b.className="badge warn"; b.textContent="Overdue";
-    right.appendChild(b);
-  }
-  const btn = document.createElement("button");
-  btn.className = "btn small";
-  btn.textContent = t.done ? "Undo" : "Complete";
+  const btn = document.createElement("button"); btn.className="btn small"; btn.textContent = t.done ? "Undo" : "Complete";
   btn.addEventListener("click", ()=> toggleTodoDone(t, row));
   right.appendChild(btn);
 
-  const keb = document.createElement("button");
-  keb.className="icon-btn"; keb.textContent="⋯";
-  keb.title="Edit or reschedule";
+  const keb = document.createElement("button"); keb.className="icon-btn"; keb.textContent="⋯"; keb.title="Edit or reschedule";
   keb.addEventListener("click", ()=> openTodoModal(t));
   right.appendChild(keb);
 
@@ -469,19 +391,13 @@ function todoRow(t){
   return row;
 }
 async function toggleTodoDone(t, rowEl){
-  if (!t.done) {
-    t.done = true;
-    rowEl?.classList.add("success-flash");
-    await grantPoints(t.points, t.name, "todo", t.id);
-  } else {
-    t.done = false;
-    await reversePoints(t.points, "todo", t.id);
-  }
+  if (!t.done) { t.done = true; rowEl?.classList.add("success-flash"); await grantPoints(t.points, t.name, "todo", t.id); }
+  else { t.done = false; await reversePoints(t.points, "todo", t.id); }
   await saveState(state);
   renderHeader(); renderTodaysTasks(); renderCompletedFeed(); renderCalendar(); renderStats();
 }
 function openTodoModal(existing=null){
-  const modal = $("#modal"); const mTitle=$("#modalTitle"); const mBody=$("#modalBody"); const ok=$("#modalOk");
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk");
   const cancel=$("#modalCancel"), close=$("#modalClose");
   const isEdit = !!existing;
   mTitle.textContent = isEdit? "Edit Task" : "Add Task";
@@ -491,29 +407,24 @@ function openTodoModal(existing=null){
   const points = fieldNum("Points", existing?.points ?? 10, 1, 999);
   const due = fieldDate("Due date", existing?.dueDay || state.today.day);
 
-  // Recurrence (weekday chips) — only if creating new or editing a rule-based task
-  const recWrap = document.createElement("div"); recWrap.className="form";
-  const label = document.createElement("div"); label.className="muted"; label.textContent="Repeat on (optional)";
+  // Recurrence chips (Mon..Sun)
   const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-  const chips = document.createElement("div"); chips.className="row wrap";
+  const chipsWrap = document.createElement("div"); chipsWrap.className="row wrap";
   const chipEls=[];
   for (let i=0;i<7;i++){
-    const wd = (i+1)%7; // Mon=1..Sun=0
+    const wd = (i+1)%7;
     const b=document.createElement("button"); b.type="button"; b.className="btn ghost small"; b.dataset.wd=String(wd); b.textContent=days[i];
     b.addEventListener("click", ()=> b.classList.toggle("is-selected"));
-    chipEls.push(b); chips.appendChild(b);
+    chipEls.push(b); chipsWrap.appendChild(b);
   }
-  recWrap.appendChild(label); recWrap.appendChild(chips);
+  const recLabel=document.createElement("div"); recLabel.className="muted"; recLabel.textContent="Repeat on (optional)";
+  mBody.appendChild(name.wrap); mBody.appendChild(points.wrap); mBody.appendChild(due.wrap); mBody.appendChild(recLabel); mBody.appendChild(chipsWrap);
 
-  // if editing instance with a rule, preselect its rule weekdays
+  // preselect from rule if editing an instance with a rule
   if (existing?.ruleId) {
     const r = state.todoRules.find(x=>x.id===existing.ruleId);
-    if (r?.recurrence?.byWeekday) {
-      for (const b of chipEls){ if (r.recurrence.byWeekday.includes(parseInt(b.dataset.wd,10))) b.classList.add("is-selected"); }
-    }
+    if (r?.recurrence?.byWeekday) for (const b of chipEls){ if (r.recurrence.byWeekday.includes(parseInt(b.dataset.wd,10))) b.classList.add("is-selected"); }
   }
-
-  mBody.appendChild(name.wrap); mBody.appendChild(points.wrap); mBody.appendChild(due.wrap); mBody.appendChild(recWrap);
 
   ok.onclick = async ()=>{
     const n = name.input.value.trim(); if(!n){ toast("Title required"); return; }
@@ -523,10 +434,17 @@ function openTodoModal(existing=null){
 
     if (isEdit) {
       existing.name = n; existing.points = p; existing.dueDay = day;
-      // if it had a rule, update rule weekdays to selected (if any selected)
       if (existing.ruleId) {
         const r = state.todoRules.find(x=>x.id===existing.ruleId);
         if (r && selected.length) r.recurrence = { freq:"weekly", byWeekday: selected };
+        if (r && !selected.length) { // remove recurrence
+          // detach rule from this item but keep rule unless user deletes in Recurring card
+          existing.ruleId = undefined;
+        }
+      } else if (selected.length){
+        // create a new rule from this item
+        const rule = { id: uuid(), name:n, points:p, recurrence:{freq:"weekly", byWeekday:selected}, anchorDay: day };
+        state.todoRules.push(rule); existing.ruleId = rule.id;
       }
     } else {
       const todo = { id: uuid(), name:n, points:p, dueDay:day, done:false };
@@ -534,169 +452,89 @@ function openTodoModal(existing=null){
       if (selected.length){
         const rule = { id: uuid(), name:n, points:p, recurrence:{freq:"weekly", byWeekday:selected}, anchorDay: day };
         state.todoRules.push(rule);
-        // also schedule today if matches
         const todayWd = new Date(day+"T00:00:00").getDay();
         if (selected.includes(todayWd)) todo.ruleId = rule.id;
       }
     }
     await saveState(state);
-    closeModal();
-    renderTodaysTasks(); renderCalendar();
+    closeModal(); renderTodaysTasks(); renderCalendar(); renderManage(); // recurring card may change
   };
 
   cancel.onclick = closeModal; close.onclick = closeModal;
   modal.classList.remove("hidden");
-
   function closeModal(){ modal.classList.add("hidden"); }
 }
 
-/* ---------- Daily Habits ---------- */
+/* Habits */
 function renderHabits(){
   const wrap = $("#habitsList"); wrap.innerHTML="";
   const active = state.habits.filter(h=>h.active!==false);
-  if (active.length===0) {
-    const d = document.createElement("div"); d.className="placeholder";
-    d.textContent = "No habits yet. Add 1–3 to start your streak.";
-    wrap.appendChild(d);
-    return;
-  }
+  if (active.length===0) { const d=document.createElement("div"); d.className="placeholder"; d.textContent="No habits yet. Add 1–3 to start your streak."; wrap.appendChild(d); return; }
   for (const h of active) wrap.appendChild(habitRow(h));
 }
 function habitRow(h){
-  const row = document.createElement("div"); row.className="habit-row";
+  const row=document.createElement("div"); row.className="habit-row";
   const st = state.today.habitsStatus[h.id] || {tally:0,done:false};
   if (st.done) row.classList.add("done");
 
-  const left = document.createElement("div"); left.className="habit-left";
-  const title = document.createElement("div"); title.className="habit-title"; title.textContent = h.name;
-  const sub = document.createElement("div"); sub.className="habit-sub";
-  if (h.type==="binary") sub.textContent = `+${h.pointsOnComplete} pts`;
-  else sub.textContent = `${st.tally||0}/${h.targetPerDay} • +${h.pointsOnComplete} pts when done`;
-  left.appendChild(title); left.appendChild(sub);
+  const left=document.createElement("div"); left.className="habit-left";
+  left.innerHTML = `<div class="habit-title">${h.name}</div><div class="habit-sub">${h.type==="binary" ? `+${h.pointsOnComplete} pts` : `${st.tally||0}/${h.targetPerDay} • +${h.pointsOnComplete} pts when done`}</div>`;
+  const right=document.createElement("div"); right.className="habit-right";
 
-  const right = document.createElement("div"); right.className="habit-right";
-  if (h.type==="binary") {
-    const toggle = document.createElement("div"); toggle.className="habit-toggle";
-    toggle.addEventListener("click", ()=> toggleHabitBinary(h, row));
-    right.appendChild(toggle);
+  if (h.type==="binary"){
+    const toggle=document.createElement("div"); toggle.className="habit-toggle"; toggle.addEventListener("click", ()=> toggleHabitBinary(h, row)); right.appendChild(toggle);
   } else {
-    const ctr = document.createElement("div"); ctr.className="counter";
-    const minus = document.createElement("button"); minus.textContent="−";
-    const num = document.createElement("div"); num.className="num"; num.textContent= String(st.tally||0);
-    const plus = document.createElement("button"); plus.textContent="+";
+    const ctr=document.createElement("div"); ctr.className="counter";
+    const minus=document.createElement("button"); minus.textContent="−";
+    const num=document.createElement("div"); num.className="num"; num.textContent= String(st.tally||0);
+    const plus=document.createElement("button"); plus.textContent="+";
     minus.addEventListener("click", ()=> adjustHabitTally(h,-1, row));
-    plus.addEventListener("click", ()=> adjustHabitTally(h, +1, row));
-    ctr.appendChild(minus); ctr.appendChild(num); ctr.appendChild(plus);
-    right.appendChild(ctr);
+    plus.addEventListener("click", ()=> adjustHabitTally(h,+1, row));
+    ctr.append(minus,num,plus); right.appendChild(ctr);
   }
-  row.appendChild(left); row.appendChild(right);
-  return row;
+  row.append(left,right); return row;
 }
 async function toggleHabitBinary(h, rowEl){
   const st = state.today.habitsStatus[h.id] || {tally:0,done:false};
-  if (!st.done) {
-    st.done = true; state.today.habitsStatus[h.id] = st;
-    rowEl?.classList.add("success-flash");
-    await grantPoints(h.pointsOnComplete, h.name, "habit", h.id);
-  } else {
-    st.done = false; state.today.habitsStatus[h.id] = st;
-    await reversePoints(h.pointsOnComplete, "habit", h.id);
-  }
-  await saveState(state);
-  renderHeader(); renderHabits(); renderCompletedFeed(); renderCalendar(); renderStats();
+  if (!st.done){ st.done=true; state.today.habitsStatus[h.id]=st; rowEl?.classList.add("success-flash"); await grantPoints(h.pointsOnComplete, h.name, "habit", h.id); }
+  else { st.done=false; state.today.habitsStatus[h.id]=st; await reversePoints(h.pointsOnComplete,"habit",h.id); }
+  await saveState(state); renderHeader(); renderHabits(); renderCompletedFeed(); renderCalendar(); renderStats();
 }
 async function adjustHabitTally(h, delta, rowEl){
   const st = state.today.habitsStatus[h.id] || {tally:0,done:false};
   const prevDone = st.done;
-  const next = clamp((st.tally||0)+delta, 0, h.targetPerDay||1);
-  st.tally = next; st.done = (next >= (h.targetPerDay||1));
-  state.today.habitsStatus[h.id] = st;
-
-  if (!prevDone && st.done) {
-    rowEl?.classList.add("success-flash");
-    await grantPoints(h.pointsOnComplete, h.name, "habit", h.id);
-  } else if (prevDone && !st.done) {
-    await reversePoints(h.pointsOnComplete, "habit", h.id);
-  } else {
-    await saveState(state);
-  }
+  st.tally = clamp((st.tally||0)+delta, 0, h.targetPerDay||1);
+  st.done = (st.tally >= (h.targetPerDay||1)); state.today.habitsStatus[h.id]=st;
+  if (!prevDone && st.done){ rowEl?.classList.add("success-flash"); await grantPoints(h.pointsOnComplete, h.name, "habit", h.id); }
+  else if (prevDone && !st.done){ await reversePoints(h.pointsOnComplete,"habit",h.id); }
+  else { await saveState(state); }
   renderHeader(); renderHabits(); renderCompletedFeed(); renderCalendar(); renderStats();
 }
-function openHabitModal(existing=null){
-  const modal = $("#modal"); const mTitle=$("#modalTitle"); const mBody=$("#modalBody"); const ok=$("#modalOk");
-  const cancel=$("#modalCancel"), close=$("#modalClose");
-  const isEdit = !!existing;
-  mTitle.textContent = isEdit? "Edit Habit" : "Add Habit";
-  mBody.innerHTML="";
 
-  const name = fieldText("Name", existing?.name || "");
-  const typeWrap = document.createElement("label"); typeWrap.textContent="Type";
-  typeWrap.style.color="var(--muted)"; typeWrap.style.display="grid"; typeWrap.style.gap="6px";
-  const typeSel = document.createElement("select");
-  typeSel.style.cssText="background:#0F1630;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:12px;font-size:16px";
-  typeSel.innerHTML = `<option value="binary">Binary (Done/Not)</option><option value="counter">Counter (e.g., 3/3)</option>`;
-  typeSel.value = existing?.type || "binary";
-  typeWrap.appendChild(typeSel);
-
-  const target = fieldNum("Target per day (for Counter)", existing?.targetPerDay ?? 3, 1, 20);
-  const pts = fieldNum("Points when completed", existing?.pointsOnComplete ?? 10, 1, 999);
-
-  mBody.appendChild(name.wrap); mBody.appendChild(typeWrap); mBody.appendChild(target.wrap); mBody.appendChild(pts.wrap);
-
-  ok.onclick = async ()=>{
-    const n = name.input.value.trim(); if(!n){ toast("Name required"); return; }
-    const item = existing || { id: uuid(), active:true };
-    item.name = n; item.type = typeSel.value;
-    item.targetPerDay = clamp(parseInt(target.input.value||"3",10), 1, 20);
-    item.pointsOnComplete = clamp(parseInt(pts.input.value||"10",10), 1, 999);
-    if (!existing) state.habits.push(item);
-    await saveState(state);
-    closeModal(); renderHabits(); renderStats();
-  };
-  cancel.onclick = closeModal; close.onclick = closeModal;
-  modal.classList.remove("hidden");
-  function closeModal(){ modal.classList.add("hidden"); }
-}
-
-/* ---------- Daily Challenges ---------- */
+/* Challenges */
 function renderChallenges(){
-  const list = $("#dailyList"); list.innerHTML="";
-  const day = state.today.day;
-  const assigned = state.assigned[day] || [];
-  if (assigned.length===0) {
-    const d = document.createElement("div"); d.className="placeholder";
-    d.textContent="No challenges assigned. Add some in Manage → Challenge Pool.";
-    list.appendChild(d); return;
-  }
-  for (const id of assigned) {
-    const ch = state.challenges.find(x=>x.id===id);
-    if (!ch) continue;
+  const list=$("#dailyList"); list.innerHTML="";
+  const day=state.today.day; const assigned = state.assigned[day] || [];
+  if (assigned.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No challenges assigned. Add some in Manage → Challenge Pool."; list.appendChild(d); return; }
+  for(const id of assigned){
+    const ch=state.challenges.find(x=>x.id===id); if(!ch) continue;
     const done = !!state.logs.find(l=>l.day===day && l.type==='challenge' && l.id===id);
-    const card = document.createElement("div"); card.className="tile" + (done?" done":"");
-    const meta = document.createElement("div"); meta.className="meta";
-    const title=document.createElement("div"); title.className="title"; title.textContent=ch.name;
-    const sub=document.createElement("div"); sub.className="sub"; sub.textContent = `+${ch.points??10} pts`;
-    meta.appendChild(title); meta.appendChild(sub);
-    const btn = document.createElement("button"); btn.className="btn small"; btn.textContent = done? "Undo" : "Complete";
+    const card=document.createElement("div"); card.className="tile"+(done?" done":"");
+    const meta=document.createElement("div"); meta.className="meta"; meta.innerHTML=`<div class="title">${ch.name}</div><div class="sub">+${ch.points??10} pts</div>`;
+    const btn=document.createElement("button"); btn.className="btn small"; btn.textContent=done?"Undo":"Complete";
     btn.addEventListener("click", ()=> toggleChallenge(ch, done, card));
-    card.appendChild(meta); card.appendChild(btn);
-    list.appendChild(card);
+    card.append(meta,btn); list.appendChild(card);
   }
 }
 async function toggleChallenge(ch, isDone, cardEl){
-  if (!isDone) {
-    cardEl?.classList.add("success-flash");
-    await grantPoints(ch.points??10, ch.name, "challenge", ch.id);
-  } else {
-    await reversePoints(ch.points??10, "challenge", ch.id);
-  }
-  await saveState(state);
-  renderHeader(); renderChallenges(); renderCompletedFeed(); renderCalendar(); renderStats(); renderBoss();
+  if (!isDone){ cardEl?.classList.add("success-flash"); await grantPoints(ch.points??10, ch.name, "challenge", ch.id); }
+  else { await reversePoints(ch.points??10, "challenge", ch.id); }
+  await saveState(state); renderHeader(); renderChallenges(); renderCompletedFeed(); renderCalendar(); renderStats(); renderBoss();
 }
 
-/* ---------- Weekly Boss ---------- */
+/* Weekly Boss */
 function renderBoss(){
-  const ring = $("#bossRing"); const goalsWrap=$("#bossGoals"); goalsWrap.innerHTML="";
+  const ring=$("#bossRing"); const goalsWrap=$("#bossGoals"); goalsWrap.innerHTML="";
   const goals = state.weeklyBoss.goals || [];
   let totalT=0, total=0;
   for(const g of goals){ totalT += (g.target||0); total += Math.min(g.tally||0, g.target||0); }
@@ -708,177 +546,136 @@ function renderBoss(){
     const row=document.createElement("div"); row.className="boss-goal";
     const top=document.createElement("div"); top.className="row";
     const label=document.createElement("div"); label.className="label"; label.textContent=g.label;
-    const meta=document.createElement("div"); meta.className="meta";
-    const clampT = Math.min(g.tally||0, g.target||0);
-    meta.textContent=`${clampT}/${g.target}`;
-    const bar=document.createElement("div"); bar.className="boss-bar";
-    const fill=document.createElement("div"); fill.style.width = (g.target>0? Math.round((clampT/g.target)*100):0)+"%";
-    bar.appendChild(fill); top.appendChild(label); top.appendChild(meta);
-    row.appendChild(top); row.appendChild(bar); goalsWrap.appendChild(row);
+    const meta=document.createElement("div"); meta.className="meta"; meta.textContent=`${Math.min(g.tally||0,g.target||0)}/${g.target}`;
+    const bar=document.createElement("div"); bar.className="boss-bar"; const fill=document.createElement("div");
+    fill.style.width = (g.target>0? Math.round((Math.min(g.tally||0,g.target)/g.target)*100):0)+"%"; bar.appendChild(fill);
+
+    // + / - controls
+    const ctr=document.createElement("div"); ctr.className="row";
+    const minus=document.createElement("button"); minus.className="btn ghost small"; minus.textContent="−";
+    const plus=document.createElement("button"); plus.className="btn small"; plus.textContent="+";
+    minus.addEventListener("click", async()=>{ g.tally = Math.max(0, (g.tally||0)-1); await saveState(state); renderBoss(); });
+    plus.addEventListener("click", async()=>{ g.tally = Math.min((g.target||0), (g.tally||0)+1); await saveState(state); renderBoss(); });
+
+    top.append(label, meta);
+    row.appendChild(top); row.appendChild(bar); row.appendChild(ctr);
+    ctr.append(minus, plus);
+    goalsWrap.appendChild(row);
   }
 }
 function drawBossRing(canvas, pct){
-  if(!canvas) return;
-  const ctx = canvas.getContext("2d");
+  if(!canvas) return; const ctx=canvas.getContext("2d");
   const W=canvas.width, H=canvas.height; const cx=W/2, cy=H/2, r=Math.min(W,H)/2-14;
   ctx.clearRect(0,0,W,H);
   ctx.lineWidth=14; ctx.strokeStyle="#1b2347"; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke();
-  const grad=ctx.createLinearGradient(0,0,W,H); grad.addColorStop(0,"#5B8CFF"); grad.addColorStop(1,"#B85CFF");
+  const grad=ctx.createLinearGradient(0,0,W,H); grad.addColorStop(0,"#5B8CFF"); grad.addStop?grad.addStop:0; grad.addColorStop(1,"#B85CFF");
   const start=-Math.PI/2; const end=start+(Math.PI*2)*(pct/100);
   ctx.strokeStyle=grad; ctx.beginPath(); ctx.arc(cx,cy,r,start,end); ctx.stroke();
-  ctx.fillStyle="rgba(230,233,242,.85)"; ctx.font="24px system-ui, -apple-system, Segoe UI, Roboto";
-  ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(`${pct}%`, cx, cy);
+  ctx.fillStyle="rgba(230,233,242,.85)"; ctx.font="24px system-ui, -apple-system, Segoe UI, Roboto"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(`${pct}%`, cx, cy);
 }
 
-/* ---------- Completed feed ---------- */
+/* Completed Today feed */
 function renderCompletedFeed(){
   const wrap=$("#feedToday"); wrap.innerHTML="";
-  const day = state.today.day;
+  const day=state.today.day;
   const items = state.logs.filter(l=>l.day===day && (l.type==='todo'||l.type==='habit'||l.type==='challenge'||l.type==='library'));
   if(items.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="Nothing completed yet. Tap the + to get started."; wrap.appendChild(d); return; }
   for(const log of items){
     const row=document.createElement("div"); row.className="feed-item";
     const left=document.createElement("div"); left.className="feed-left";
     const title=document.createElement("div"); title.className="feed-title"; title.textContent=log.name;
-    const sub=document.createElement("div"); sub.className="feed-sub";
-    const map = {todo:"Task",habit:"Habit",challenge:"Challenge",library:"Quick Task"};
+    const sub=document.createElement("div"); sub.className="feed-sub"; const map={todo:"Task",habit:"Habit",challenge:"Challenge",library:"Quick Task"};
     sub.textContent = `${map[log.type]||"Item"} • +${log.points} pts`;
-    left.appendChild(title); left.appendChild(sub);
     const right=document.createElement("div"); right.className="feed-right";
     const btn=document.createElement("button"); btn.className="chip-undo"; btn.textContent="Undo";
     btn.addEventListener("click", ()=> undoLogEntry(log));
-    right.appendChild(btn);
-    row.appendChild(left); row.appendChild(right);
-    wrap.appendChild(row);
+    left.append(title,sub); right.appendChild(btn); row.append(left,right); wrap.appendChild(row);
   }
 }
 async function undoLogEntry(log){
   if (log.day!==state.today.day){ toast("Can only undo today"); return; }
-  if (log.type==='todo'){
-    const t = state.todos.find(x=>x.id===log.id); if(t){ t.done=false; }
-    await reversePoints(log.points, 'todo', log.id);
-  } else if (log.type==='habit'){
-    const st = state.today.habitsStatus[log.id] || {tally:0,done:false};
-    st.done=false; state.today.habitsStatus[log.id]=st;
-    await reversePoints(log.points, 'habit', log.id);
-  } else if (log.type==='challenge'){
-    await reversePoints(log.points, 'challenge', log.id);
-  } else if (log.type==='library'){
-    await reversePoints(log.points, 'library', log.id);
-  }
-  await saveState(state);
-  renderHeader(); renderHome(); renderCalendar(); renderStats();
+  if (log.type==='todo'){ const t=state.todos.find(x=>x.id===log.id); if(t){ t.done=false; } await reversePoints(log.points,'todo',log.id); }
+  else if (log.type==='habit'){ const st=state.today.habitsStatus[log.id]||{tally:0,done:false}; st.done=false; state.today.habitsStatus[log.id]=st; await reversePoints(log.points,'habit',log.id); }
+  else if (log.type==='challenge'){ await reversePoints(log.points,'challenge',log.id); }
+  else if (log.type==='library'){ await reversePoints(log.points,'library',log.id); }
+  await saveState(state); renderHeader(); renderHome(); renderCalendar(); renderStats();
 }
 
-/* =========================
-   POINTS/COINS ECONOMY
-========================= */
+/* -------------- Economy -------------- */
 function ensureProgressBucket(day){
   if(!state.progress[day]) state.progress[day]={ points:0, coinsEarned:0, tasksDone:0, habitsDone:0, challengesDone:0 };
   return state.progress[day];
 }
 async function grantPoints(points, name, type, id){
-  const day = state.today.day;
-  // Power Hour bonus
-  const now = Date.now();
-  if (state.powerHour?.active && state.powerHour.endsAt && now < Date.parse(state.powerHour.endsAt)) {
+  const day=state.today.day;
+  if (state.powerHour?.active && state.powerHour.endsAt && Date.now() < Date.parse(state.powerHour.endsAt)) {
     points = Math.round(points * 1.5);
   }
-
   state.today.points += points;
   state.today.unconvertedPoints += points;
 
-  // coins conversion
   const rate = state.settings.pointsPerCoin || 100;
   const minted = Math.floor(state.today.unconvertedPoints / rate);
-  if (minted > 0){
-    state.today.unconvertedPoints -= minted * rate;
-    state.profile.coins += minted;
-    const bucket = ensureProgressBucket(day);
-    bucket.coinsEarned += minted;
-  }
+  if (minted>0){ state.today.unconvertedPoints -= minted*rate; state.profile.coins += minted; ensureProgressBucket(day).coinsEarned += minted; }
 
-  const bucket = ensureProgressBucket(day);
-  bucket.points += points;
+  const bucket=ensureProgressBucket(day); bucket.points += points;
   if (type==='todo') bucket.tasksDone += 1;
   if (type==='habit') bucket.habitsDone += 1;
   if (type==='challenge') bucket.challengesDone += 1;
 
   state.logs.unshift({ ts:new Date().toISOString(), type, id, name, points, day });
 
-  // Weekly boss tally if library task matches a goal
-  if (type==='library' && state.weeklyBoss?.goals?.length){
-    for (const g of state.weeklyBoss.goals){
-      if (g.linkedTaskIds?.includes(id)) {
-        g.tally = (g.tally||0) + 1;
-      }
-    }
-  }
+  // boss: if library task maps to a goal, we increment tally via library flow; here we leave as-is.
+  toast(`+${points} pts`); confettiBurst({count:10});
 
-  vibrate(40); toast(`+${points} pts`);
-  confettiBurst({ count: 10 });
-
-  // 100pt milestones
   const nextMilestone = Math.floor((state.today.points)/100)*100;
   if (nextMilestone>0 && nextMilestone>(state.today.lastMilestone||0)){
-    state.today.lastMilestone = nextMilestone;
-    banner(`Milestone: ${nextMilestone} points today!`);
-    confettiBurst({ count: 24, duration: 1100 });
+    state.today.lastMilestone = nextMilestone; banner(`Milestone: ${nextMilestone} points today!`); confettiBurst({count:24, duration:1100});
   }
-
   await saveState(state);
 }
 async function reversePoints(points, type, id){
-  const day = state.today.day;
+  const day=state.today.day;
   state.today.points = Math.max(0, state.today.points - points);
-  const bucket = ensureProgressBucket(day);
+  const bucket=ensureProgressBucket(day);
   bucket.points = Math.max(0, bucket.points - points);
   if (type==='todo') bucket.tasksDone = Math.max(0, bucket.tasksDone - 1);
   if (type==='habit') bucket.habitsDone = Math.max(0, bucket.habitsDone - 1);
   if (type==='challenge') bucket.challengesDone = Math.max(0, bucket.challengesDone - 1);
-  const i = state.logs.findIndex(l=> l.day===day && l.type===type && l.id===id && l.points===points);
+  const i=state.logs.findIndex(l=>l.day===day && l.type===type && l.id===id && l.points===points);
   if (i>=0) state.logs.splice(i,1);
-  vibrate(12); toast("Undone");
-  await saveState(state);
+  toast("Undone"); await saveState(state);
 }
 
-/* =========================
-   QUICK ADD (Library + New Today’s Task)
-========================= */
+/* -------------- Quick Add -------------- */
 function openQuickAdd(){
   qaShowTab("lib");
-  // reset form fields
   $("#qaTodoTitle").value = "";
   $("#qaTodoPoints").value = 10;
-  $$("#qaWeekdays .btn").forEach(b=>b.classList.remove("active","is-selected"));
+  $$("#qaWeekdays .btn").forEach(b=>b.classList.remove("is-selected"));
   renderQuickAdd();
   $("#drawerQuickAdd").classList.remove("hidden");
 }
 function closeQuickAdd(){ $("#drawerQuickAdd").classList.add("hidden"); }
-
 function qaShowTab(which){
   const tabLib=$("#qaTabLib"), tabToday=$("#qaTabToday");
   const viewLib=$("#qaViewLib"), viewToday=$("#qaViewToday");
-  const sel = (btn, on)=> btn.classList.toggle("is-selected", !!on);
+  const sel=(btn,on)=>btn.classList.toggle("is-selected", !!on);
   sel(tabLib, which==="lib"); sel(tabToday, which==="today");
   viewLib.classList.toggle("hidden", which!=="lib");
   viewToday.classList.toggle("hidden", which!=="today");
 }
-
 function renderQuickAdd(){
   const favRow=$("#quickFavsRow"), favWrap=$("#quickFavs"), grid=$("#quickTaskList");
   favWrap.innerHTML=""; grid.innerHTML="";
-  const tasks = state.library.filter(t=>t.active!==false);
-  if (tasks.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No tasks yet. Add in Manage → Task Library."; grid.appendChild(d); favRow.classList.add("hidden"); return; }
-
-  // favorites by usage
+  const tasks=state.library.filter(t=>t.active!==false);
+  if (tasks.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="Add tasks in Manage → Task Library."; grid.appendChild(d); favRow.classList.add("hidden"); return; }
   const counts=new Map(); for(const l of state.logs){ if(l.type==='library') counts.set(l.id,(counts.get(l.id)||0)+1); }
   const favs=tasks.slice().sort((a,b)=>(counts.get(b.id)||0)-(counts.get(a.id)||0)).slice(0,3);
   if (favs.length>0){ favRow.classList.remove("hidden"); for(const t of favs){ const c=document.createElement("button"); c.className="quick-chip"; c.textContent=t.name; c.addEventListener("click",()=> quickAddLibrary(t)); favWrap.appendChild(c);} } else favRow.classList.add("hidden");
-
   for(const t of tasks){
     const disabled = isLibraryOnCooldown(t);
-    const card=document.createElement("button"); card.className="quick-card"; card.disabled = disabled;
+    const card=document.createElement("button"); card.className="quick-card"; card.disabled=disabled;
     const sub = disabled ? "Cooling…" : `+${t.points} pts`;
     card.innerHTML = `<div>${t.name}</div><div class="sub">${sub}</div>`;
     card.addEventListener("click", ()=> quickAddLibrary(t));
@@ -886,8 +683,7 @@ function renderQuickAdd(){
   }
 }
 function isLibraryOnCooldown(t){
-  if (!t.cooldownHours) return false;
-  if (!t.lastDoneAt) return false;
+  if (!t.cooldownHours || !t.lastDoneAt) return false;
   const last = Date.parse(t.lastDoneAt);
   const readyAt = last + t.cooldownHours*3600*1000;
   return Date.now() < readyAt;
@@ -898,34 +694,18 @@ async function quickAddLibrary(t){
   await grantPoints(t.points, t.name, "library", t.id);
   renderQuickAdd(); renderHeader(); renderCompletedFeed(); renderCalendar(); renderStats(); renderBoss();
 }
-
 async function onCreateQuickTodo(){
-  const title = $("#qaTodoTitle").value.trim();
-  let pts = clamp(parseInt($("#qaTodoPoints").value||"10",10), 1, 999);
-  if (!title){ toast("Title required"); return; }
-
-  const selected = $$("#qaWeekdays .btn.active, #qaWeekdays .btn.is-selected").map(b=>parseInt(b.dataset.wd,10));
-  const today = state.today.day;
-  const todo = { id: uuid(), name:title, points:pts, dueDay: today, done:false };
-  state.todos.push(todo);
-
-  if (selected.length){
-    const rule = { id: uuid(), name:title, points:pts, recurrence:{freq:"weekly", byWeekday:selected}, anchorDay: today };
-    state.todoRules.push(rule);
-    // attach to today if matches
-    const wd = new Date(today+"T00:00:00").getDay();
-    if (selected.includes(wd)) todo.ruleId = rule.id;
-  }
-
-  await saveState(state);
-  closeQuickAdd();
-  renderTodaysTasks(); renderCalendar();
+  const title=$("#qaTodoTitle").value.trim(); const pts=clamp(parseInt($("#qaTodoPoints").value||"10",10),1,999);
+  if(!title){ toast("Title required"); return; }
+  const selected = $$("#qaWeekdays .btn.is-selected").map(b=>parseInt(b.dataset.wd,10));
+  const today=state.today.day;
+  const todo={ id:uuid(), name:title, points:pts, dueDay:today, done:false }; state.todos.push(todo);
+  if (selected.length){ const rule={ id:uuid(), name:title, points:pts, recurrence:{freq:"weekly",byWeekday:selected}, anchorDay:today }; state.todoRules.push(rule); const wd=new Date(today+"T00:00:00").getDay(); if (selected.includes(wd)) todo.ruleId=rule.id; }
+  await saveState(state); closeQuickAdd(); renderTodaysTasks(); renderCalendar(); renderManage();
   toast("Added");
 }
 
-/* =========================
-   SHOP
-========================= */
+/* -------------- Shop -------------- */
 function openShopDrawer(){ renderShopDrawer(); $("#drawerShop").classList.remove("hidden"); }
 function closeShopDrawer(){ $("#drawerShop").classList.add("hidden"); }
 function renderShopDrawer(){
@@ -938,33 +718,25 @@ function renderShopDrawer(){
     const cost=document.createElement("div"); cost.className="shop-cost"; cost.textContent = `${s.cost} coins`;
     const btn=document.createElement("button"); btn.className="btn small"; btn.textContent="Buy";
     btn.addEventListener("click", ()=> buyShopItem(s));
-    row.appendChild(title); row.appendChild(cost); row.appendChild(btn);
-    wrap.appendChild(row);
+    row.append(title,cost,btn); wrap.appendChild(row);
   }
 }
 async function buyShopItem(item){
   if ((state.profile.coins||0) < (item.cost||0)) { toast("Not enough coins"); return; }
   state.profile.coins -= (item.cost||0);
   state.logs.unshift({ ts:new Date().toISOString(), type:'purchase', id:item.id, name:item.name, cost:item.cost, day: state.today.day });
-  if (item.type==='powerHour'){
-    state.powerHour.active = true;
-    state.powerHour.endsAt = new Date(Date.now() + 60*60*1000).toISOString();
-    toast("Power Hour Active (+50% pts for 60m)");
-  }
-  await saveState(state);
-  renderHeader(); closeShopDrawer();
+  if (item.type==='powerHour'){ state.powerHour.active=true; state.powerHour.endsAt = new Date(Date.now() + 60*60*1000).toISOString(); toast("Power Hour Active (+50% pts for 60m)"); }
+  await saveState(state); renderHeader(); closeShopDrawer();
 }
 
-/* =========================
-   MANAGE (Library / Challenges / Shop / Boss / Prefs)
-========================= */
+/* -------------- Manage (Library / Challenges / Shop / Recurring / Prefs) -------------- */
 function renderManage(){
   renderLibraryAdmin();
   renderChallengesAdmin();
   renderShopAdmin();
-  renderBossManage();
+  renderRecurringAdmin();   // NEW
 
-  // Preferences UI values
+  // Prefs
   $("#inpDailyGoal").value = state.settings.dailyGoal||60;
   $("#inpPPC").value = state.settings.pointsPerCoin||100;
   $("#chkHaptics").checked = !!state.settings.haptics;
@@ -981,26 +753,23 @@ function renderLibraryAdmin(){
   for(const it of items){
     const row=document.createElement("div"); row.className="tile";
     const meta=document.createElement("div"); meta.className="meta";
-    const t=document.createElement("div"); t.className="title"; t.textContent=it.name;
-    const s=document.createElement("div"); s.className="sub"; s.textContent = `+${it.points} pts${it.cooldownHours?` • ${it.cooldownHours}h cooldown`:''}`;
-    meta.appendChild(t); meta.appendChild(s);
+    meta.innerHTML = `<div class="title">${it.name}</div><div class="sub">+${it.points} pts${it.cooldownHours?` • ${it.cooldownHours}h cooldown`:''}</div>`;
     const actions=document.createElement("div"); actions.className="row";
-    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit";
-    edit.addEventListener("click", ()=> openLibraryModal(it));
+    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit"; edit.addEventListener("click", ()=> openLibraryModal(it));
     const tog=document.createElement("button"); tog.className="btn small"; const active=it.active!==false; tog.textContent=active?"Archive":"Activate";
     tog.addEventListener("click", async()=>{ it.active = !active; await saveState(state); renderLibraryAdmin(); });
-    actions.appendChild(edit); actions.appendChild(tog);
-    row.appendChild(meta); row.appendChild(actions); el.appendChild(row);
+    actions.append(edit,tog); row.append(meta,actions); el.appendChild(row);
   }
 }
 function openLibraryModal(existing=null){
-  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk");
+  const cancel=$("#modalCancel"), close=$("#modalClose");
   const isEdit=!!existing; mTitle.textContent=isEdit?"Edit Library Item":"Add Library Item";
   mBody.innerHTML="";
   const name=fieldText("Name", existing?.name || "");
   const pts=fieldNum("Points", existing?.points ?? 10, 1, 999);
   const cd=fieldNum("Cooldown hours (optional)", existing?.cooldownHours ?? "", 0, 168, true);
-  mBody.appendChild(name.wrap); mBody.appendChild(pts.wrap); mBody.appendChild(cd.wrap);
+  mBody.append(name.wrap, pts.wrap, cd.wrap);
   ok.onclick = async ()=>{
     const n=name.input.value.trim(); if(!n){ toast("Name required"); return; }
     const item= existing || { id:uuid(), active:true };
@@ -1019,26 +788,20 @@ function renderChallengesAdmin(){
   if(items.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No challenges yet. Click “+ Add”."; el.appendChild(d); return; }
   for(const it of items){
     const row=document.createElement("div"); row.className="tile";
-    const meta=document.createElement("div"); meta.className="meta";
-    const t=document.createElement("div"); t.className="title"; t.textContent=it.name;
-    const s=document.createElement("div"); s.className="sub"; s.textContent = `+${it.points??10} pts`;
-    meta.appendChild(t); meta.appendChild(s);
+    const meta=document.createElement("div"); meta.className="meta"; meta.innerHTML=`<div class="title">${it.name}</div><div class="sub">+${it.points??10} pts</div>`;
     const actions=document.createElement("div"); actions.className="row";
-    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit";
-    edit.addEventListener("click", ()=> openChallengeModal(it));
+    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit"; edit.addEventListener("click", ()=> openChallengeModal(it));
     const tog=document.createElement("button"); tog.className="btn small"; const active=it.active!==false; tog.textContent=active?"Archive":"Activate";
     tog.addEventListener("click", async()=>{ it.active = !active; await saveState(state); renderChallengesAdmin(); });
-    actions.appendChild(edit); actions.appendChild(tog);
-    row.appendChild(meta); row.appendChild(actions); el.appendChild(row);
+    actions.append(edit,tog); row.append(meta,actions); el.appendChild(row);
   }
 }
 function openChallengeModal(existing=null){
-  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk");
+  const cancel=$("#modalCancel"), close=$("#modalClose");
   const isEdit=!!existing; mTitle.textContent=isEdit?"Edit Challenge":"Add Challenge";
-  mBody.innerHTML="";
-  const name=fieldText("Name", existing?.name || "");
-  const pts=fieldNum("Points", existing?.points ?? 10, 1, 999);
-  mBody.appendChild(name.wrap); mBody.appendChild(pts.wrap);
+  mBody.innerHTML=""; const name=fieldText("Name", existing?.name || ""); const pts=fieldNum("Points", existing?.points ?? 10, 1, 999);
+  mBody.append(name.wrap, pts.wrap);
   ok.onclick = async ()=>{
     const n=name.input.value.trim(); if(!n){ toast("Name required"); return; }
     const item= existing || { id:uuid(), active:true };
@@ -1056,35 +819,30 @@ function renderShopAdmin(){
   if(items.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No rewards yet. Click “+ Add”."; el.appendChild(d); return; }
   for(const it of items){
     const row=document.createElement("div"); row.className="tile";
-    const meta=document.createElement("div"); meta.className="meta";
-    const t=document.createElement("div"); t.className="title"; t.textContent=it.name;
-    const s=document.createElement("div"); s.className="sub"; s.textContent = `${it.cost} coins${it.type?` • ${it.type}`:""}`;
-    meta.appendChild(t); meta.appendChild(s);
+    const meta=document.createElement("div"); meta.className="meta"; meta.innerHTML=`<div class="title">${it.name}</div><div class="sub">${it.cost} coins${it.type?` • ${it.type}`:""}</div>`;
     const actions=document.createElement("div"); actions.className="row";
-    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit";
-    edit.addEventListener("click", ()=> openShopItemModal(it));
+    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit"; edit.addEventListener("click", ()=> openShopItemModal(it));
     const tog=document.createElement("button"); tog.className="btn small"; const active=it.active!==false; tog.textContent=active?"Archive":"Activate";
     tog.addEventListener("click", async()=>{ it.active = !active; await saveState(state); renderShopAdmin(); });
-    actions.appendChild(edit); actions.appendChild(tog);
-    row.appendChild(meta); row.appendChild(actions); el.appendChild(row);
+    actions.append(edit,tog); row.append(meta,actions); el.appendChild(row);
   }
 }
 function openShopItemModal(existing=null){
-  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk");
+  const cancel=$("#modalCancel"), close=$("#modalClose");
   const isEdit=!!existing; mTitle.textContent=isEdit?"Edit Shop Item":"Add Shop Item";
   mBody.innerHTML="";
   const name=fieldText("Name", existing?.name || "");
   const cost=fieldNum("Cost (coins)", existing?.cost ?? 20, 1, 999);
-  const typeWrap = document.createElement("label"); typeWrap.textContent="Type";
-  typeWrap.style.color="var(--muted)"; typeWrap.style.display="grid"; typeWrap.style.gap="6px";
-  const sel = document.createElement("select"); sel.style.cssText="background:#0F1630;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:12px;font-size:16px";
+  const typeWrap=document.createElement("label"); typeWrap.textContent="Type"; typeWrap.style.cssText="color:var(--muted);display:grid;gap:6px";
+  const sel=document.createElement("select"); sel.style.cssText="background:#0F1630;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:12px;font-size:16px";
   sel.innerHTML = `<option value="">Generic reward</option><option value="powerHour">Power Hour (+50% / 60m)</option><option value="streakRepair">Streak Repair</option>`;
   sel.value = existing?.type || "";
   typeWrap.appendChild(sel);
-  mBody.appendChild(name.wrap); mBody.appendChild(cost.wrap); mBody.appendChild(typeWrap);
+  mBody.append(name.wrap, cost.wrap, typeWrap);
   ok.onclick = async ()=>{
     const n=name.input.value.trim(); if(!n){ toast("Name required"); return; }
-    const item = existing || { id:uuid(), active:true };
+    const item= existing || { id:uuid(), active:true };
     item.name=n; item.cost=clamp(parseInt(cost.input.value||"20",10),1,999); item.type = sel.value || undefined;
     if(!existing) state.shop.push(item);
     await saveState(state); closeModal(); renderShopAdmin();
@@ -1093,43 +851,69 @@ function openShopItemModal(existing=null){
   function closeModal(){ modal.classList.add("hidden"); }
 }
 
-/* ---------- Boss manage (templates kept) ---------- */
-function renderBossManage(){
-  const wrap=$("#manageBoss"); wrap.innerHTML="";
-  if (!state.weeklyBoss.goals || state.weeklyBoss.goals.length===0){
-    const d=document.createElement("div"); d.className="placeholder"; d.textContent="Boss goals will auto-assign weekly. Templates are here for now."; wrap.appendChild(d); return;
+/* Recurring Tasks (rules) */
+function renderRecurringAdmin(){
+  // Inject a card before Preferences if not present
+  let card = document.getElementById("recurringCard");
+  const manageView = $("#manageView");
+  if (!card) {
+    card = document.createElement("div"); card.id="recurringCard"; card.className="card";
+    const head=document.createElement("div"); head.className="card-head";
+    const h3=document.createElement("h3"); h3.textContent="Recurring Tasks";
+    const addBtn=document.createElement("button"); addBtn.className="btn small"; addBtn.textContent="+ Add";
+    addBtn.addEventListener("click", ()=> openRecurringModal());
+    head.append(h3, addBtn);
+    const list=document.createElement("div"); list.id="recurringList"; list.className="list admin";
+    card.append(head, list);
+    // Insert before Preferences card
+    const prefsCard = $("#manageView .card:last-of-type"); // Data card; prefer insert before Preferences
+    manageView.insertBefore(card, prefsCard);
   }
-  for(const g of state.weeklyBoss.goals){
+  const list=$("#recurringList"); list.innerHTML="";
+  const rules=state.todoRules||[];
+  if (rules.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No recurring tasks yet."; list.appendChild(d); return; }
+  for(const r of rules){
     const row=document.createElement("div"); row.className="tile";
     const meta=document.createElement("div"); meta.className="meta";
-    const t=document.createElement("div"); t.className="title"; t.textContent=g.label;
-    const s=document.createElement("div"); s.className="sub"; s.textContent=`Target: ${g.target} • Linked tasks: ${g.linkedTaskIds?.length||0}`;
-    meta.appendChild(t); meta.appendChild(s);
-    row.appendChild(meta); wrap.appendChild(row);
+    const days = (r.recurrence?.byWeekday||[]).map(wd=>["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][wd]).join("·") || "—";
+    meta.innerHTML = `<div class="title">${r.name}</div><div class="sub">+${r.points} pts • ${days}</div>`;
+    const actions=document.createElement("div"); actions.className="row";
+    const edit=document.createElement("button"); edit.className="btn ghost small"; edit.textContent="Edit"; edit.addEventListener("click", ()=> openRecurringModal(r));
+    const del=document.createElement("button"); del.className="btn small"; del.textContent="Delete";
+    del.addEventListener("click", async()=>{ if(!confirm("Delete this recurrence?")) return; // detach future; keep any generated past todos as history
+      const id=r.id; state.todoRules = state.todoRules.filter(x=>x.id!==id);
+      // Detach ruleId from any future todos
+      const today=state.today.day; state.todos = state.todos.filter(t=> !(t.ruleId===id && t.dueDay>=today) );
+      await saveState(state); renderRecurringAdmin(); renderTodaysTasks(); renderCalendar();
+    });
+    actions.append(edit,del); row.append(meta,actions); list.appendChild(row);
   }
 }
-async function applyBossTemplate(kind){
-  const byName=new Map(); for(const t of state.library) byName.set(t.name.toLowerCase(), t.id);
-  let goals=[];
-  if (kind==="momentum"){
-    goals=[
-      { id:uuid(), label:"Talk to 10 people", target:10, tally:0, linkedTaskIds: byName.has("talk to someone")?[byName.get("talk to someone")]:[] },
-      { id:uuid(), label:"Focused work 90 min", target:2, tally:0, linkedTaskIds: byName.has("45-min study")?[byName.get("45-min study")]:[] },
-      { id:uuid(), label:"Workouts x3", target:3, tally:0, linkedTaskIds: byName.has("full workout")?[byName.get("full workout")]:[] }
-    ];
-  } else {
-    goals=[
-      { id:uuid(), label:"Meaningful chats x10", target:10, tally:0, linkedTaskIds: byName.has("talk to someone")?[byName.get("talk to someone")]:[] },
-      { id:uuid(), label:"Call family x2", target:2, tally:0, linkedTaskIds: byName.has("call parents")?[byName.get("call parents")]:[] }
-    ];
-  }
-  state.weeklyBoss.weekStartDay = startOfWeekISO(state.today.day||todayStr());
-  state.weeklyBoss.goals = goals;
-  state.weeklyBoss.completed = false;
-  await saveState(state); renderBoss(); renderBossManage(); toast("Boss template applied");
+function openRecurringModal(existing=null){
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
+  const isEdit=!!existing; mTitle.textContent=isEdit?"Edit Recurring Task":"Add Recurring Task";
+  mBody.innerHTML="";
+  const name=fieldText("Name", existing?.name || "");
+  const pts=fieldNum("Points", existing?.points ?? 10, 1, 999);
+  const days=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  const chips=document.createElement("div"); chips.className="row wrap";
+  const chipEls=[]; for(let i=0;i<7;i++){ const wd=(i+1)%7; const b=document.createElement("button"); b.type="button"; b.className="btn ghost small"; b.dataset.wd=String(wd); b.textContent=days[i]; b.addEventListener("click",()=> b.classList.toggle("is-selected")); chipEls.push(b); chips.appendChild(b); }
+  if (existing?.recurrence?.byWeekday){ for(const b of chipEls){ if(existing.recurrence.byWeekday.includes(parseInt(b.dataset.wd,10))) b.classList.add("is-selected"); } }
+  mBody.append(name.wrap, pts.wrap); const lbl=document.createElement("div"); lbl.className="muted"; lbl.textContent="Repeat on"; mBody.append(lbl, chips);
+  ok.onclick = async ()=>{
+    const n=name.input.value.trim(); if(!n){ toast("Name required"); return; }
+    const p=clamp(parseInt(pts.input.value||"10",10),1,999);
+    const selected = chipEls.filter(b=>b.classList.contains("is-selected")).map(b=>parseInt(b.dataset.wd,10));
+    if (selected.length===0){ toast("Pick at least one weekday"); return; }
+    if (isEdit){ existing.name=n; existing.points=p; existing.recurrence={freq:"weekly",byWeekday:selected}; }
+    else { state.todoRules.push({ id:uuid(), name:n, points:p, anchorDay:state.today.day, recurrence:{freq:"weekly",byWeekday:selected} }); }
+    await saveState(state); closeModal(); renderRecurringAdmin(); generateRecurringTodosForDay(state.today.day); renderTodaysTasks(); renderCalendar();
+  };
+  cancel.onclick=closeModal; close.onclick=closeModal; modal.classList.remove("hidden");
+  function closeModal(){ modal.classList.add("hidden"); }
 }
 
-/* ---------- Preferences + Data ---------- */
+/* -------------- Preferences/Data -------------- */
 async function onPrefChange(){
   state.settings.dailyGoal = clamp(parseInt($("#inpDailyGoal").value||"60",10), 10, 1000);
   state.settings.pointsPerCoin = clamp(parseInt($("#inpPPC").value||"100",10), 10, 1000);
@@ -1140,10 +924,9 @@ async function onPrefChange(){
   state.settings.bossTimesMax = clamp(parseInt($("#inpBossMaxTimes").value||"5",10), state.settings.bossTimesMin, 14);
 
   await saveState(state);
-  // Re-evaluate assignments based on new settings
   ensureDailyAssignments(true);
   ensureWeeklyBoss();
-  renderHeader(); renderChallenges(); renderBossManage(); renderBoss(); renderStats();
+  renderHeader(); renderChallenges(); renderBoss(); renderManage(); renderStats();
   toast("Saved");
 }
 async function onExport(){
@@ -1155,93 +938,77 @@ async function onExport(){
 async function onImport(e){
   const f=e.target.files[0]; if(!f) return;
   const text=await f.text();
-  try{
-    const obj=await importJSON(text);
-    state=migrateToV41(obj); ensureDayRollover(); ensureWeeklyBoss(); renderAll(); toast("Imported");
-  }catch{ toast("Import failed"); }
+  try{ const obj=await importJSON(text); state=migrate(obj); ensureDayRollover(); ensureWeeklyBoss(); renderAll(); toast("Imported"); }catch{ toast("Import failed"); }
   e.target.value="";
 }
 async function onWipe(){
   if (!confirm("This will erase all data. Continue?")) return;
-  await clearAll(); state=defaultStateV41(); state.today.day=todayStr(); ensureDailyAssignments(true); ensureWeeklyBoss(); await saveState(state); renderAll(); toast("Wiped");
+  await clearAll(); state=defaultState(); state.today.day=todayStr(); ensureDailyAssignments(true); ensureWeeklyBoss(); await saveState(state); renderAll(); toast("Wiped");
 }
 
-/* =========================
-   STATS (KPI + bar + per-habit 30d)
-========================= */
+/* -------------- Stats -------------- */
 function renderStats(){
-  // KPI container
-  const statsView = $("#statsView");
-  let kpis = statsView.querySelector(".kpis");
-  if (!kpis) { kpis = document.createElement("div"); kpis.className = "kpis"; statsView.insertBefore(kpis, statsView.firstChild); }
+  const statsView=$("#statsView");
+  let kpis = statsView.querySelector(".kpis"); if (!kpis) { kpis=document.createElement("div"); kpis.className="kpis"; statsView.insertBefore(kpis, statsView.firstChild); }
 
-  // Metrics
   const goal = state.settings.dailyGoal || 60;
-  const today = new Date(state.today.day + "T00:00:00");
+  const last30 = getLastNDays(30);
 
-  // week windows
-  const weekStart = new Date(today);
-  const wd = weekStart.getDay(); const delta = (wd === 0 ? -6 : 1 - wd);
-  weekStart.setDate(weekStart.getDate() + delta);
-  const lastWeekStart = new Date(weekStart); lastWeekStart.setDate(weekStart.getDate() - 7);
-  const thisWeek = sumWeek(weekStart);
-  const prevWeek = sumWeek(lastWeekStart);
+  // Week windows
+  const t = new Date(state.today.day + "T00:00:00");
+  const ws = new Date(t); const wd=ws.getDay(); const delta=(wd===0?-6:1-wd); ws.setDate(ws.getDate()+delta);
+  const lastWs = new Date(ws); lastWs.setDate(ws.getDate()-7);
+
+  const thisWeek = sumWeek(ws), prevWeek = sumWeek(lastWs);
   const deltaPct = prevWeek>0 ? Math.round(((thisWeek - prevWeek) / prevWeek) * 100) : (thisWeek>0?100:0);
 
   // 30d aggregates
-  const last30 = getLastNDays(30);
-  let daysOverGoal = 0, sum30 = 0;
-  for (const d of last30) {
-    const pts = state.progress[d]?.points || 0;
-    sum30 += pts;
-    if (pts >= goal) daysOverGoal++;
-  }
-  const avg30 = Math.round(sum30 / last30.length);
-
-  // lifetime positive points (ignore purchases; undos already remove logs)
+  let over=0,sum30=0; for(const d of last30){ const pts=state.progress[d]?.points||0; sum30+=pts; if(pts>=goal) over++; }
+  const avg30 = Math.round(sum30/last30.length);
   const lifetime = state.logs.reduce((acc,l)=> acc + (l.points>0? l.points:0), 0);
 
-  // Render chips
-  kpis.innerHTML = "";
+  // KPI chips
+  kpis.innerHTML="";
   kpis.appendChild(kpi("This week", `${fmt(thisWeek)} pts`, signed(deltaPct)));
-  kpis.appendChild(kpi("Consistency (30d)", `${daysOverGoal}/30 days`, null));
+  kpis.appendChild(kpi("Consistency (30d)", `${over}/30 days`, null));
   kpis.appendChild(kpi("Avg / day (30)", `${fmt(avg30)} pts`, null));
   kpis.appendChild(kpi("Longest streak", `${fmt(state.profile.bestStreak||0)} days`, null));
   kpis.appendChild(kpi("Lifetime points", `${fmt(lifetime)} pts`, null));
 
-  // Streak area numbers
+  // Ensure This Week card exists (aesthetic mini chart)
+  let weekCard = statsView.querySelector("#weekCard");
+  if (!weekCard) {
+    weekCard = document.createElement("div"); weekCard.id="weekCard"; weekCard.className="card";
+    weekCard.innerHTML = `<div class="card-head"><h3>This Week</h3></div><canvas id="weekBars" width="600" height="140" aria-label="This week bars"></canvas>`;
+    const after = statsView.querySelector(".grid.two"); statsView.insertBefore(weekCard, after.nextSibling);
+  }
+  const weekVals = getLastNDays(7).map(d=> state.progress[d]?.points || 0);
+  const cvs=$("#weekBars"); const r=window.devicePixelRatio||1; cvs.style.width="100%"; const w=cvs.clientWidth||600; const h=140;
+  cvs.width=Math.floor(w*r); cvs.height=Math.floor(h*r); cvs.getContext("2d").setTransform(r,0,0,r,0,0);
+  drawMiniBars(cvs, weekVals);
+
+  // Streak & 30d points chart (existing)
   $("#streakBig").textContent = fmt(state.streak.current||0);
   $("#bestStreak").textContent = fmt(state.profile.bestStreak||0);
-  // completions last 7d
-  const last7 = getLastNDays(7);
-  let cmp=0; for(const d of last7){ cmp += (state.progress[d]?.tasksDone||0) + (state.progress[d]?.habitsDone||0) + (state.progress[d]?.challengesDone||0); }
+  const last7 = getLastNDays(7); let cmp=0; for(const d of last7){ const p=state.progress[d]; cmp += (p?.tasksDone||0)+(p?.habitsDone||0)+(p?.challengesDone||0); }
   $("#cmpWeek").textContent = fmt(cmp);
 
-  // 30-day points bar chart
-  const cvs=$("#bar30"); const r=window.devicePixelRatio||1; cvs.style.width="100%"; const w=cvs.clientWidth||600; const h=260;
-  cvs.width=Math.floor(w*r); cvs.height=Math.floor(h*r); cvs.getContext("2d").setTransform(r,0,0,r,0,0);
-  const vals = last30.map(d=> state.progress[d]?.points || 0);
-  renderBarChart(cvs, vals);
+  const bar30=$("#bar30"); bar30.style.width="100%";
+  const w2 = bar30.clientWidth||600, h2=260, r2=window.devicePixelRatio||1;
+  bar30.width=Math.floor(w2*r2); bar30.height=Math.floor(h2*r2); bar30.getContext("2d").setTransform(r2,0,0,r2,0,0);
+  const vals30 = last30.map(d=> state.progress[d]?.points || 0);
+  renderBarChart(bar30, vals30);
 
-  // Per-habit last 30d rows
+  // Habit history rows
   renderHabitHistory(last30);
 
   function sumWeek(startDate){
-    let sum=0;
-    for (let i=0;i<7;i++){ const d=new Date(startDate); d.setDate(startDate.getDate()+i); const key=isoDay(d); sum+=(state.progress[key]?.points||0); }
-    return sum;
+    let sum=0; for(let i=0;i<7;i++){ const d=new Date(startDate); d.setDate(startDate.getDate()+i); const key=isoDay(d); sum+=(state.progress[key]?.points||0); } return sum;
   }
   function kpi(label, value, deltaStr){
     const el=document.createElement("div"); el.className="kpi";
-    const a=document.createElement("div"); a.className="kpi-label"; a.textContent=label;
-    const b=document.createElement("div"); b.className="kpi-value"; b.textContent=value;
-    el.appendChild(a); el.appendChild(b);
-    if (deltaStr !== null) {
-      const d=document.createElement("div"); d.className="kpi-delta"; d.textContent = deltaStr;
-      if (deltaStr.startsWith("+")) d.classList.add("pos");
-      if (deltaStr.startsWith("-")) d.classList.add("neg");
-      el.appendChild(d);
-    }
+    el.innerHTML = `<div class="kpi-label">${label}</div><div class="kpi-value">${value}</div>`;
+    if (deltaStr!==null){ const d=document.createElement("div"); d.className="kpi-delta"; d.textContent=deltaStr; if (deltaStr.startsWith("+")) d.classList.add("pos"); if (deltaStr.startsWith("-")) d.classList.add("neg"); el.appendChild(d); }
     return el;
   }
   function signed(n){ return (n>0?`+${n}%` : n<0? `${n}%` : "0%"); }
@@ -1251,105 +1018,112 @@ function renderHabitHistory(last30Days){
   const wrap=$("#habitHistory"); wrap.innerHTML="";
   const active = state.habits.filter(h=>h.active!==false);
   if (active.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No habits yet."; wrap.appendChild(d); return; }
-
   for (const h of active){
     const row=document.createElement("div"); row.className="habit-30-row";
-
     const name=document.createElement("div"); name.className="habit-30-name"; name.textContent=h.name;
     const cells=document.createElement("div"); cells.className="habit-30-cells";
 
-    let streak=0; let currentStreak=0;
-    for (let i=0;i<last30Days.length;i++){
-      const day = last30Days[i];
+    let streak=0, current=0;
+    for (const day of last30Days){
       const on = habitDoneOnDay(h.id, day);
       const cell=document.createElement("div"); cell.className="hcell";
-      if (on) {
-        // strength: if points today over goal -> stronger color (fun)
-        const pts = state.progress[day]?.points||0;
-        cell.classList.add(pts >= (state.settings.dailyGoal||60) ? "on-strong" : "on");
-        currentStreak++;
-        streak = Math.max(streak, currentStreak);
-      } else {
-        currentStreak=0;
-      }
+      if (on){ const pts=state.progress[day]?.points||0; cell.classList.add(pts >= (state.settings.dailyGoal||60) ? "on-strong" : "on"); current++; streak=Math.max(streak,current); }
+      else current=0;
       cells.appendChild(cell);
     }
-
     const sEl=document.createElement("div"); sEl.className="habit-30-streak"; sEl.textContent = `Streak: ${streak}`;
-    row.appendChild(name); row.appendChild(cells); row.appendChild(sEl);
-    wrap.appendChild(row);
+    row.append(name,cells,sEl); wrap.appendChild(row);
   }
 }
 function habitDoneOnDay(habitId, dayStr){
-  if (dayStr === state.today.day){
-    return !!(state.today.habitsStatus[habitId]?.done);
-  }
+  if (dayStr === state.today.day) return !!(state.today.habitsStatus[habitId]?.done);
   return state.logs.some(l=> l.type==='habit' && l.id===habitId && l.day===dayStr);
 }
-
 function getLastNDays(n){
   const arr=[]; const base=new Date(); base.setHours(0,0,0,0);
   for(let i=n-1;i>=0;i--){ const d=new Date(base); d.setDate(base.getDate()-i); arr.push(isoDay(d)); }
   return arr;
 }
-
-/* =========================
-   CALENDAR (month view)
-========================= */
-let calendarCursor = new Date();
-function changeCalendarMonth(delta){
-  calendarCursor.setMonth(calendarCursor.getMonth()+delta);
-  renderCalendar();
+function drawMiniBars(canvas, values){
+  const ctx=canvas.getContext("2d"); const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+  const padL=16, padR=8, padT=8, padB=22; const innerW=W-padL-padR, innerH=H-padT-padB;
+  const maxVal=Math.max(1,...values);
+  const stepX=innerW/values.length; const gap=Math.min(8, stepX*0.3); const barW=Math.max(3, stepX-gap);
+  ctx.save(); ctx.translate(padL,padT);
+  // grid
+  ctx.strokeStyle="rgba(230,233,242,0.08)"; ctx.lineWidth=1;
+  for(let p=0;p<=1.001;p+=0.5){ const y=innerH - p*innerH + .5; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(innerW,y); ctx.stroke(); }
+  // bars
+  const grad=ctx.createLinearGradient(0,0,0,innerH); grad.addColorStop(0,"#6CA0FF"); grad.addColorStop(1,"#3A64CC");
+  for(let i=0;i<values.length;i++){
+    const v=values[i]; const h=(v/maxVal)*innerH; const x=i*stepX+(gap/2); const y=innerH-h;
+    roundRect(ctx,x,y,barW,h,Math.min(8,barW*0.45)); ctx.fillStyle=grad; ctx.fill();
+  }
+  ctx.restore();
+  function roundRect(ctx,x,y,w,h,r){ const rr=Math.min(r,w/2,h/2); ctx.beginPath(); ctx.moveTo(x+rr,y); ctx.arcTo(x+w,y,x+w,y+rr,rr); ctx.lineTo(x+w,y+h-rr); ctx.arcTo(x+w,y+h,x+w-rr,y+h,rr); ctx.lineTo(x+rr,y+h); ctx.arcTo(x,y+h,x,y+h-rr,rr); ctx.lineTo(x,y+rr); ctx.arcTo(x,y,x+rr,y,rr); ctx.closePath(); }
 }
+
+/* -------------- Calendar -------------- */
+let calendarCursor=new Date();
+function changeCalendarMonth(delta){ calendarCursor.setMonth(calendarCursor.getMonth()+delta); renderCalendar(); }
 function renderCalendar(){
   const grid=$("#monthGrid"); if(!grid) return;
-  const y = calendarCursor.getFullYear(); const m = calendarCursor.getMonth();
+  const y=calendarCursor.getFullYear(); const m=calendarCursor.getMonth();
   $("#calTitle").textContent = new Date(y, m, 1).toLocaleString(undefined,{month:"long", year:"numeric"});
-
-  // start Monday
-  const first = new Date(y, m, 1); const firstW = (first.getDay()||7); // 1..7
-  const start = new Date(first); start.setDate(1 - (firstW-1));
+  const first=new Date(y,m,1); const firstW=(first.getDay()||7); const start=new Date(first); start.setDate(1-(firstW-1));
   grid.innerHTML="";
   for(let i=0;i<42;i++){
-    const d=new Date(start); d.setDate(start.getDate()+i);
-    const ds = isoDay(d);
-    const day = document.createElement("div"); day.className="cal-day"; if (d.getMonth()!==m) day.classList.add("out");
-    if (ds===state.today.day) day.classList.add("today");
+    const d=new Date(start); d.setDate(start.getDate()+i); const ds=isoDay(d);
+    const day=document.createElement("div"); day.className="cal-day"; if(d.getMonth()!==m) day.classList.add("out"); if(ds===state.today.day) day.classList.add("today");
 
-    const date = document.createElement("div"); date.className="date"; date.textContent = String(d.getDate());
-    const ring = document.createElement("div"); ring.className="habit-ring"; if (areAllHabitsDoneForDay(ds)) ring.classList.add("done");
-
-    const dotsWrap = document.createElement("div"); dotsWrap.className="task-dots";
-    const due = state.todos.filter(t=>t.dueDay===ds).length;
-    const done = state.todos.filter(t=>t.dueDay===ds && t.done).length;
+    const date=document.createElement("div"); date.className="date"; date.textContent= String(d.getDate());
+    const ring=document.createElement("div"); ring.className="habit-ring"; if(areAllHabitsDoneForDay(ds)) ring.classList.add("done");
+    const dotsWrap=document.createElement("div"); dotsWrap.className="task-dots";
+    const due=state.todos.filter(t=>t.dueDay===ds).length; const done=state.todos.filter(t=>t.dueDay===ds && t.done).length;
     for(let j=0;j<Math.min(due,6);j++){ const dot=document.createElement("div"); dot.className="task-dot"+(j<done?" done":""); dotsWrap.appendChild(dot); }
+    const pts=document.createElement("div"); pts.className="pts-small"; pts.textContent = state.progress[ds]?.points || "";
 
-    const pts = document.createElement("div"); pts.className="pts-small"; pts.textContent = state.progress[ds]?.points || "";
-
-    day.appendChild(date); day.appendChild(ring); day.appendChild(dotsWrap); day.appendChild(pts);
+    day.append(date, ring, dotsWrap, pts);
+    day.addEventListener("click", ()=> openDayDetail(ds));
     grid.appendChild(day);
   }
 }
-function areAllHabitsDoneForDay(dayStr) {
-  if (dayStr === state.today.day) {
-    const activeHabits = state.habits.filter(h=>h.active!==false);
-    if (activeHabits.length===0) return false;
-    for (const h of activeHabits) {
-      const st = state.today.habitsStatus[h.id] || {tally:0,done:false};
-      if (!st.done) return false;
-    }
-    return true;
-  }
+function areAllHabitsDoneForDay(dayStr){
   const activeIds = new Set(state.habits.filter(h=>h.active!==false).map(h=>h.id));
   if (activeIds.size===0) return false;
-  const completedToday = new Set(state.logs.filter(l=>l.day===dayStr && l.type==='habit').map(l=>l.id));
-  for (const id of activeIds) if (!completedToday.has(id)) return false;
+  if (dayStr === state.today.day){
+    for(const id of activeIds){ if(!(state.today.habitsStatus[id]?.done)) return false; } return true;
+  }
+  const completed = new Set(state.logs.filter(l=>l.day===dayStr && l.type==='habit').map(l=>l.id));
+  for(const id of activeIds){ if(!completed.has(id)) return false; }
   return true;
 }
+function openDayDetail(ds){
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
+  mTitle.textContent = `Day Summary — ${ds}`;
+  const pts=state.progress[ds]?.points||0; const coins=state.progress[ds]?.coinsEarned||0;
+  const logs=state.logs.filter(l=>l.day===ds);
+  const habits=logs.filter(l=>l.type==='habit'); const todos=logs.filter(l=>l.type==='todo'); const chals=logs.filter(l=>l.type==='challenge'); const libs=logs.filter(l=>l.type==='library');
 
-/* =========================
-   View switching (pills use this)
-========================= */
+  mBody.innerHTML="";
+  const top=document.createElement("div"); top.className="tile"; top.innerHTML=`<div class="meta"><div class="title">${pts} pts</div><div class="sub">${coins} coins</div></div>`;
+  mBody.appendChild(top);
+
+  function section(title, arr){
+    const card=document.createElement("div"); card.className="list"; const head=document.createElement("div"); head.className="quick-title"; head.textContent=title; card.appendChild(head);
+    if (arr.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="—"; card.appendChild(d); }
+    else for(const l of arr){ const row=document.createElement("div"); row.className="feed-item"; row.innerHTML=`<div class="feed-left"><div class="feed-title">${l.name}</div><div class="feed-sub">+${l.points} pts</div></div>`; card.appendChild(row); }
+    mBody.appendChild(card);
+  }
+  section("Habits", habits); section("Tasks", todos); section("Challenges / Quick Tasks", chals.concat(libs));
+
+  ok.textContent="Close"; ok.onclick=closeModal; $("#modalCancel").textContent=""; $("#modalCancel").onclick=null;
+  modal.classList.remove("hidden");
+  function closeModal(){ modal.classList.add("hidden"); }
+}
+
+/* -------------- View switching -------------- */
 function switchView(id){
   const tabs=$$(".tabbar .tab"); const views=$$(".view");
   tabs.forEach(b=>{ const target=b.getAttribute("data-target"); b.classList.toggle("active", target===id); b.setAttribute("aria-selected", target===id?"true":"false"); });
@@ -1358,27 +1132,9 @@ function switchView(id){
   if (id==="calendarView") renderCalendar();
 }
 
-/* =========================
-   Form helpers
-========================= */
-function fieldText(label, val=""){
-  const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.display="grid"; wrap.style.gap="6px"; wrap.style.color="var(--muted)";
-  const input=document.createElement("input"); input.type="text"; input.value=val; styleInput(input);
-  wrap.appendChild(input); return {wrap,input};
-}
-function fieldNum(label, val=0, min=0, max=999, allowEmpty=false){
-  const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.display="grid"; wrap.style.gap="6px"; wrap.style.color="var(--muted)";
-  const input=document.createElement("input"); input.type="number"; if(allowEmpty && val==="") input.value=""; else input.value=String(val);
-  input.min=String(min); input.max=String(max); styleInput(input);
-  wrap.appendChild(input); return {wrap,input};
-}
-function fieldDate(label, val){
-  const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.display="grid"; wrap.style.gap="6px"; wrap.style.color="var(--muted)";
-  const input=document.createElement("input"); input.type="date"; input.value=val; styleInput(input);
-  wrap.appendChild(input); return {wrap,input};
-}
+/* -------------- Form helpers -------------- */
+function fieldText(label, val=""){ const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.cssText="display:grid;gap:6px;color:var(--muted)"; const input=document.createElement("input"); input.type="text"; styleInput(input); input.value=val; wrap.appendChild(input); return {wrap,input}; }
+function fieldNum(label, val=0, min=0, max=999, allowEmpty=false){ const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.cssText="display:grid;gap:6px;color:var(--muted)"; const input=document.createElement("input"); input.type="number"; if(allowEmpty && val==="") input.value=""; else input.value=String(val); input.min=String(min); input.max=String(max); styleInput(input); wrap.appendChild(input); return {wrap,input}; }
+function fieldDate(label, val){ const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.cssText="display:grid;gap:6px;color:var(--muted)"; const input=document.createElement("input"); input.type="date"; input.value=val; styleInput(input); wrap.appendChild(input); return {wrap,input}; }
 function styleInput(input){ input.style.background="#0F1630"; input.style.border="1px solid var(--border)"; input.style.color="var(--text)"; input.style.borderRadius="10px"; input.style.padding="12px 12px"; input.style.fontSize="16px"; }
 
-/* =========================
-   Done.
-========================= */
