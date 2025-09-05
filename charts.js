@@ -1,153 +1,212 @@
-// charts.js — v4 visuals
-// Exports:
-//   renderBarChart(canvas, values:number[])
-//   renderCalendarHeatmap(containerEl, progress:{[day:string]:{points:number}})
+// charts.js — compact, pretty canvas charts (no deps)
 
-export function renderBarChart(canvas, values) {
-  if (!canvas) return;
+/**
+ * HiDPI setup so canvas looks crisp on phones.
+ */
+function setupHiDPI(canvas, cssW, cssH) {
+  const r = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.floor((cssW || canvas.clientWidth || canvas.width || 600) * r);
+  const h = Math.floor((cssH || canvas.clientHeight || canvas.height || 240) * r);
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
+  ctx.setTransform(r, 0, 0, r, 0, 0);
+  return { ctx, w: w / r, h: h / r, r };
+}
 
-  // Clear
-  ctx.clearRect(0, 0, W, H);
-
-  // Layout
-  const padL = 18, padR = 8, padT = 12, padB = 28;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
-
-  // Scales
-  const maxVal = Math.max(1, ...values);
-  const stepX = innerW / Math.max(1, values.length);
-  const barGap = Math.min(8, stepX * 0.25);
-  const barW = Math.max(2, stepX - barGap);
-  const radius = Math.min(10, barW * 0.45);
-
-  // Gridlines (0, 25, 50, 75, 100%)
+/**
+ * Draw light grid lines.
+ */
+function grid(ctx, w, h, { rows = 4, cols = 0 } = {}) {
   ctx.save();
-  ctx.translate(padL, padT);
+  ctx.strokeStyle = "rgba(255,255,255,.06)";
   ctx.lineWidth = 1;
-  for (let p = 0; p <= 1.0001; p += 0.25) {
-    const y = innerH - p * innerH + 0.5; // crisp line
-    ctx.strokeStyle = "rgba(230,233,242,0.08)";
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(innerW, y);
-    ctx.stroke();
-  }
 
-  // Bars
-  const grad = ctx.createLinearGradient(0, padT, 0, padT + innerH);
-  grad.addColorStop(0, "#6CA0FF");
-  grad.addColorStop(1, "#3A64CC");
-
-  for (let i = 0; i < values.length; i++) {
-    const v = values[i];
-    const h = (v / maxVal) * innerH;
-    const x = i * stepX + (barGap / 2);
-    const y = innerH - h;
-
-    // Rounded rect bar
-    ctx.fillStyle = grad;
-    roundRect(ctx, x, y, barW, h, radius);
-    ctx.fill();
-
-    // Soft outer glow on taller bars
-    if (h > innerH * 0.25) {
-      ctx.save();
-      ctx.shadowColor = "rgba(91,140,255,0.18)";
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetY = 0;
-      ctx.fillStyle = "rgba(0,0,0,0)"; // shadow only
-      roundRect(ctx, x, y, barW, h, radius);
-      ctx.fill();
-      ctx.restore();
+  if (rows > 0) {
+    for (let i = 1; i < rows; i++) {
+      const y = (h * i) / rows;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
     }
   }
+  if (cols > 0) {
+    for (let i = 1; i < cols; i++) {
+      const x = (w * i) / cols;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
 
-  // X-axis ticks (start, mid, end) — subtle
-  ctx.strokeStyle = "rgba(230,233,242,0.10)";
+/**
+ * Rounded rectangle bar
+ */
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, Math.abs(h), Math.abs(w)) || 0;
+  const up = h < 0;
+  const sign = up ? -1 : 1;
+  const ry = Math.min(rr, Math.abs(h));
   ctx.beginPath();
-  ctx.moveTo(0, innerH + 0.5);
-  ctx.lineTo(innerW, innerH + 0.5);
+  ctx.moveTo(x, y);
+  ctx.lineTo(x, y + h - sign * ry);
+  ctx.quadraticCurveTo(x, y + h, x + rr, y + h);
+  ctx.lineTo(x + w - rr, y + h);
+  ctx.quadraticCurveTo(x + w, y + h, x + w, y + h - sign * ry);
+  ctx.lineTo(x + w, y);
+  ctx.closePath();
+}
+
+/**
+ * Nice max for y-scale.
+ */
+function niceMax(v) {
+  if (v <= 0) return 10;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const norm = v / mag;
+  let nice;
+  if (norm <= 1) nice = 1;
+  else if (norm <= 2) nice = 2;
+  else if (norm <= 5) nice = 5;
+  else nice = 10;
+  return nice * mag;
+}
+
+/**
+ * Linear gradient used across charts (matches app palette).
+ */
+function barGradient(ctx, x, y, w, h) {
+  const g = ctx.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, "#5B8CFF");
+  g.addColorStop(1, "#B85CFF");
+  return g;
+}
+
+/**
+ * 30-day points bar chart.
+ * @param {HTMLCanvasElement} canvas
+ * @param {number[]} values length up to 45 (we use 30)
+ */
+export function renderBarChart(canvas, values = []) {
+  if (!canvas) return;
+  const { ctx, w, h } = setupHiDPI(canvas, canvas.clientWidth, canvas.clientHeight);
+
+  // padding
+  const P = { t: 10, r: 8, b: 18, l: 8 };
+  const cw = w - P.l - P.r;
+  const ch = h - P.t - P.b;
+
+  // bg clear
+  ctx.clearRect(0, 0, w, h);
+
+  // grid
+  ctx.save();
+  ctx.translate(P.l, P.t);
+  grid(ctx, cw, ch, { rows: 4 });
+
+  // scale
+  const maxVal = Math.max(10, niceMax(Math.max(...values, 0)));
+  const barCount = values.length;
+  if (barCount === 0) {
+    ctx.restore();
+    return;
+  }
+
+  const gap = 4;
+  const bw = Math.max(4, Math.floor((cw - gap * (barCount - 1)) / barCount));
+  const grad = barGradient(ctx, 0, 0, 0, ch);
+
+  // bars
+  for (let i = 0; i < barCount; i++) {
+    const v = Math.max(0, values[i] || 0);
+    const x = i * (bw + gap);
+    const hpx = Math.max(2, Math.round((v / maxVal) * ch));
+    const y = ch - hpx;
+    ctx.fillStyle = grad;
+    roundRect(ctx, x, y, bw, hpx, 6);
+    ctx.fill();
+  }
+
+  // baseline
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
+  ctx.beginPath();
+  ctx.moveTo(0, ch + 0.5);
+  ctx.lineTo(cw, ch + 0.5);
   ctx.stroke();
 
   ctx.restore();
-
-  // Helper: rounded rect path
-  function roundRect(ctx, x, y, w, h, r) {
-    const rr = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(padL + x + rr, padT + y);
-    ctx.arcTo(padL + x + w, padT + y, padL + x + w, padT + y + rr, rr);
-    ctx.lineTo(padL + x + w, padT + y + h - rr);
-    ctx.arcTo(padL + x + w, padT + y + h, padL + x + w - rr, padT + y + h, rr);
-    ctx.lineTo(padL + x + rr, padT + y + h);
-    ctx.arcTo(padL + x, padT + y + h, padL + x, padT + y + h - rr, rr);
-    ctx.lineTo(padL + x, padT + y + rr);
-    ctx.arcTo(padL + x, padT + y, padL + x + rr, padT + y, rr);
-    ctx.closePath();
-  }
 }
 
-export function renderCalendarHeatmap(container, progress) {
-  if (!container) return;
+/**
+ * 7-bar weekly micro chart (Mon..Sun).
+ * @param {HTMLCanvasElement} canvas
+ * @param {number[]} values length 7, Monday-first
+ * @param {{labels?: string[]}} opts
+ */
+export function renderWeekChart(canvas, values = [], opts = {}) {
+  if (!canvas) return;
+  const { ctx, w, h } = setupHiDPI(canvas, canvas.clientWidth, canvas.clientHeight);
 
-  // Build last 90 days
-  const days = [];
-  const base = new Date();
-  base.setHours(0, 0, 0, 0);
-  for (let i = 89; i >= 0; i--) {
-    const d = new Date(base);
-    d.setDate(base.getDate() - i);
-    days.push(d.toISOString().slice(0, 10));
+  const P = { t: 10, r: 10, b: 26, l: 10 };
+  const cw = w - P.l - P.r;
+  const ch = h - P.t - P.b;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(P.l, P.t);
+
+  // vertical grid (quarters)
+  grid(ctx, cw, ch, { rows: 4 });
+
+  const vals = (values && values.length === 7) ? values : [0,0,0,0,0,0,0];
+  const ymax = Math.max(10, niceMax(Math.max(...vals)));
+  const gap = 10;
+  const bw = Math.max(14, Math.floor((cw - gap * 6) / 7));
+
+  // bars
+  const grad = barGradient(ctx, 0, 0, 0, ch);
+  for (let i = 0; i < 7; i++) {
+    const v = Math.max(0, vals[i] || 0);
+    const x = i * (bw + gap);
+    const hpx = Math.max(4, Math.round((v / ymax) * ch));
+    const y = ch - hpx;
+
+    // subtle shadow
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.35)";
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle = grad;
+    roundRect(ctx, x, y, bw, hpx, 8);
+    ctx.fill();
+    ctx.restore();
+
+    // highlight line at the top of bar
+    ctx.fillStyle = "rgba(255,255,255,.08)";
+    ctx.fillRect(x + 2, y, bw - 4, 2);
   }
 
-  // Extract values (points per day)
-  const vals = days.map(d => (progress && progress[d] ? (progress[d].points || 0) : 0));
+  // baseline
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
+  ctx.beginPath();
+  ctx.moveTo(0, ch + 0.5);
+  ctx.lineTo(cw, ch + 0.5);
+  ctx.stroke();
 
-  // Determine levels using adaptive thresholds
-  const nonZero = vals.filter(v => v > 0).sort((a, b) => a - b);
-  let t1 = 5, t2 = 20, t3 = 50, t4 = 100; // fallbacks
-  if (nonZero.length >= 4) {
-    t1 = quantile(nonZero, 0.35);
-    t2 = quantile(nonZero, 0.60);
-    t3 = quantile(nonZero, 0.80);
-    t4 = quantile(nonZero, 0.95);
-    // Ensure monotonic increase
-    const uniq = [...new Set([t1, t2, t3, t4])];
-    while (uniq.length < 4) uniq.push(uniq[uniq.length - 1] + 1);
-    [t1, t2, t3, t4] = uniq;
+  // labels
+  const labels = opts.labels || ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  ctx.fillStyle = "rgba(230,233,242,.75)";
+  ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (let i = 0; i < 7; i++) {
+    const x = i * (bw + gap) + bw / 2;
+    ctx.fillText(labels[i], x, ch + 6);
   }
 
-  // Render
-  container.innerHTML = "";
-  for (let i = 0; i < days.length; i++) {
-    const d = days[i];
-    const v = vals[i];
-
-    const cell = document.createElement("div");
-    cell.className = "hm-cell";
-
-    if (v > 0) {
-      if (v <= t1) cell.classList.add("hm-l1");
-      else if (v <= t2) cell.classList.add("hm-l2");
-      else if (v <= t3) cell.classList.add("hm-l3");
-      else cell.classList.add("hm-l4");
-    }
-
-    cell.title = `${d}: ${v} pts`;
-    container.appendChild(cell);
-  }
-
-  function quantile(arr, q) {
-    const pos = (arr.length - 1) * q;
-    const base = Math.floor(pos);
-    const rest = pos - base;
-    if (arr[base + 1] !== undefined) {
-      return arr[base] + rest * (arr[base + 1] - arr[base]);
-    } else {
-      return arr[base];
-    }
-  }
+  ctx.restore();
 }
