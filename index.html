@@ -59,15 +59,14 @@
             <h3>Today’s Tasks</h3>
             <div class="row">
               <button id="btnAddTodoInline" class="btn small">+ Add</button>
-              <button id="btnOverdueToggle" class="btn ghost small" title="Show/Hide overdue">Overdue</button>
+              <!-- Overdue toggle removed by design. -->
             </div>
           </div>
           <div id="todaysTasksList" class="list">
             <div class="placeholder">You’re all caught up. Add a task for today or schedule one.</div>
           </div>
-          <div id="overdueBlock" class="list hidden">
-            <div class="placeholder">No overdue tasks — nice.</div>
-          </div>
+          <!-- Keep the block hidden so current JS doesn’t break before we change logic -->
+          <div id="overdueBlock" class="list hidden" style="display:none"></div>
         </div>
 
         <!-- Daily Habits -->
@@ -131,9 +130,9 @@
         </div>
       </section>
 
-      <!-- STATS (clean; no extra calendar here) -->
+      <!-- STATS -->
       <section id="statsView" class="view" role="region" aria-label="Stats">
-        <!-- KPI chips are injected by JS at the top -->
+        <!-- KPI chips injected by JS -->
 
         <div class="grid two">
           <div class="card">
@@ -147,21 +146,26 @@
             </div>
           </div>
 
+          <!-- New: This Week micro-chart -->
           <div class="card">
-            <div class="card-head"><h3>30-Day Points</h3></div>
-            <canvas id="bar30" width="600" height="260" aria-label="30 day points bar chart"></canvas>
+            <div class="card-head"><h3>This Week</h3></div>
+            <canvas id="weekChart" width="600" height="160" aria-label="This week bar chart"></canvas>
+            <div id="weekDelta" class="muted" style="margin-top:8px"></div>
           </div>
         </div>
 
-        <!-- Per-Habit last 30 days rows (JS will inject here) -->
+        <div class="card">
+          <div class="card-head"><h3>30-Day Points</h3></div>
+          <canvas id="bar30" width="600" height="260" aria-label="30 day points bar chart"></canvas>
+        </div>
+
+        <!-- Per-Habit last 30 days rows -->
         <div class="card" id="habitHistoryCard">
           <div class="card-head"><h3>Habits — Last 30 Days</h3></div>
           <div id="habitHistory" class="list">
             <div class="placeholder">Habits you add will show their daily history here.</div>
           </div>
         </div>
-
-        <!-- Lifetime points (positive-only) is shown via KPI; we keep charts lean -->
       </section>
 
       <!-- MANAGE -->
@@ -174,6 +178,17 @@
           </div>
           <div id="manageTasks" class="list admin">
             <div class="placeholder">No items yet. Click “+ Add”.</div>
+          </div>
+        </div>
+
+        <!-- Recurring Tasks (new manager) -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Recurring Tasks</h3>
+            <button id="btnAddRule" class="btn small">+ Add Rule</button>
+          </div>
+          <div id="manageRecurrence" class="list admin">
+            <div class="placeholder">Your weekday rules will appear here. You can edit or remove them.</div>
           </div>
         </div>
 
@@ -199,15 +214,19 @@
           </div>
         </div>
 
-        <!-- Weekly Boss editor (kept for now for compatibility; auto-pick coming) -->
+        <!-- Weekly Boss -->
         <div class="card">
           <div class="card-head">
             <h3>Boss Quest (Weekly)</h3>
-            <button id="btnBossTemplate1" class="btn ghost small">Use “Momentum”</button>
-            <button id="btnBossTemplate2" class="btn ghost small">Use “Social”</button>
+            <!-- Keep templates for now so current JS doesn’t break; we’ll remove in the JS chunk -->
+            <div class="row">
+              <button id="btnBossTemplate1" class="btn ghost small">Use “Momentum”</button>
+              <button id="btnBossTemplate2" class="btn ghost small">Use “Social”</button>
+              <button id="btnBossReroll" class="btn small" title="Re-roll based on settings">Re-roll This Week</button>
+            </div>
           </div>
           <div id="manageBoss" class="list admin">
-            <div class="placeholder">Boss goals will auto-assign weekly. Templates are here for now.</div>
+            <div class="placeholder">Boss goals will auto-assign weekly. You can re-roll here.</div>
           </div>
         </div>
 
@@ -262,7 +281,7 @@
         </div>
       </section>
 
-      <!-- Legacy settings stub (kept hidden) -->
+      <!-- Legacy settings stub (hidden) -->
       <section id="settingsView" class="view" role="region" aria-label="Settings" style="display:none">
         <div class="card"><div class="card-head"><h3>Legacy</h3></div>
           <p class="muted">Settings moved into Manage → Preferences.</p>
@@ -299,7 +318,7 @@
       </div>
     </div>
 
-    <!-- Quick Add Drawer — now with tabs -->
+    <!-- Quick Add Drawer — with tabs -->
     <div id="drawerQuickAdd" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="qaTitle">
       <div class="drawer-card">
         <div class="drawer-head">
@@ -309,11 +328,11 @@
 
         <!-- Tabs -->
         <div class="row" style="gap:8px; padding:0 4px 8px 4px;">
-          <button id="qaTabLib" class="btn small">Do from Library</button>
+          <button id="qaTabLib" class="btn small is-selected">Do from Library</button>
           <button id="qaTabToday" class="btn ghost small">New Today’s Task</button>
         </div>
 
-        <!-- View A: Library (existing quick grid) -->
+        <!-- View A: Library -->
         <div id="qaViewLib">
           <div id="quickFavsRow" class="quick-row hidden">
             <div class="quick-title">Favorites</div>
@@ -325,7 +344,7 @@
           </div>
         </div>
 
-        <!-- View B: New Today’s Task (inline form; no time; weekday recurrence) -->
+        <!-- View B: New Today’s Task (no time; weekday recurrence) -->
         <div id="qaViewToday" class="hidden" style="padding:6px 4px 2px 4px;">
           <div class="form">
             <label>Title
@@ -338,7 +357,6 @@
 
             <div>
               <div class="quick-title">Repeat on</div>
-              <!-- Mon..Sun UI; JS will map to 0..6 (Sun..Sat) internally -->
               <div id="qaWeekdays" class="row wrap">
                 <button type="button" class="btn ghost small" data-wd="1">Mon</button>
                 <button type="button" class="btn ghost small" data-wd="2">Tue</button>
@@ -372,12 +390,36 @@
         </div>
       </div>
     </div>
+
+    <!-- Day Details Drawer (Calendar tap) -->
+    <div id="drawerDayDetails" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="dayTitle">
+      <div class="drawer-card">
+        <div class="drawer-head">
+          <h3 id="dayTitle">Day Details</h3>
+          <button id="drawerDayClose" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div class="form" style="margin-bottom:10px">
+          <div class="row wrap">
+            <div class="pill"><span class="emoji">⭐</span><span id="dayPts">0 pts</span></div>
+            <div class="pill"><span class="emoji">🪙</span><span id="dayCoins">0 coins</span></div>
+            <div class="pill"><span>✅</span><span id="dayCounts">0 tasks • 0 habits • 0 challenges</span></div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h3>What you did</h3></div>
+          <div id="dayFeed" class="list">
+            <div class="placeholder">Nothing logged for this day.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- Scripts -->
   <script type="module">import "./app.js";</script>
   <script>
-    // SW bootstrap (kept)
+    // SW bootstrap
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
     // Fallback tab wiring (center "+" is not a tab; wired in app.js)
