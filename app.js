@@ -179,11 +179,13 @@ async function init(){
   $("#fileImport").addEventListener("change", onImport);
   $("#btnWipe").addEventListener("click", onWipe);
 
-  // Calendar nav + Day Details drawer
+    // Calendar nav + Day Details drawer
   $("#calPrev").addEventListener("click", ()=> changeCalendarMonth(-1));
   $("#calNext").addEventListener("click", ()=> changeCalendarMonth(1));
   $("#calToday").addEventListener("click", ()=>{ calendarCursor = new Date(); renderCalendar(); });
   $("#drawerDayClose").addEventListener("click", closeDayDetails);
+  // NEW: close Day Details by tapping the dimmed backdrop
+  $("#drawerDayDetails").addEventListener("click", (e)=>{ if(e.target.id==="drawerDayDetails") closeDayDetails(); });
 
   // Quick Add (+) drawer
   $("#tabAdd").addEventListener("click", openQuickAdd);
@@ -194,9 +196,11 @@ async function init(){
   $("#qaTabLib").addEventListener("click", ()=> qaShowTab("lib"));
   $("#qaTabToday").addEventListener("click", ()=> qaShowTab("today"));
   $$("#qaWeekdays .btn").forEach(b=>{
-    b.addEventListener("click", ()=> b.classList.toggle("active"));
-  });
-  $("#qaCreateTodoBtn").addEventListener("click", onCreateQuickTodo);
+    // CHANGE: toggle both classes + aria-pressed for clear visual feedback
+    b.addEventListener("click", ()=>{
+      b.classList.toggle("active");
+      b.classList.toggle("is-selected");
+      b.setAttribute("aria-pressed", b.classList.contains("active") ? "true" : "false");
 
   // Shop drawer
   $("#drawerShopClose").addEventListener("click", closeShopDrawer);
@@ -715,68 +719,98 @@ async function toggleChallenge(ch, isDone, cardEl){
 function renderBoss(){
   const ring = $("#bossRing"); const goalsWrap=$("#bossGoals"); goalsWrap.innerHTML="";
   const goals = state.weeklyBoss.goals || [];
+  // overall %
   let totalT=0, total=0;
   for(const g of goals){ totalT += (g.target||0); total += Math.min(g.tally||0, g.target||0); }
   const pct = totalT>0 ? Math.round((total/totalT)*100) : 0;
   drawBossRing(ring, pct);
 
-  if(goals.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="Boss goals will appear here."; goalsWrap.appendChild(d); return; }
+  if(goals.length===0){
+    const d=document.createElement("div"); d.className="placeholder"; d.textContent="Boss goals will appear here.";
+    goalsWrap.appendChild(d); return;
+  }
+
   for(const g of goals){
     const row=document.createElement("div"); row.className="boss-goal";
+    const reached = Math.min(g.tally||0, g.target||0) >= (g.target||0);
+    if (reached) row.classList.add("done");
+
     const top=document.createElement("div"); top.className="row";
     const label=document.createElement("div"); label.className="label"; label.textContent=g.label;
     const meta=document.createElement("div"); meta.className="meta";
     const clampT = Math.min(g.tally||0, g.target||0);
     meta.textContent=`${clampT}/${g.target}`;
+    top.appendChild(label); top.appendChild(meta);
+
     const bar=document.createElement("div"); bar.className="boss-bar";
     const fill=document.createElement("div"); fill.style.width = (g.target>0? Math.round((clampT/g.target)*100):0)+"%";
     bar.appendChild(fill);
 
-    // +/- control
-    const ctr=document.createElement("div"); ctr.className="counter-mini";
+    // Use the same counter style as habits
+    const ctr=document.createElement("div"); ctr.className="counter";
     const minus=document.createElement("button"); minus.textContent="−";
     const num=document.createElement("div"); num.className="num"; num.textContent=String(clampT);
     const plus=document.createElement("button"); plus.textContent="+";
+
     minus.addEventListener("click", async()=>{
-      g.tally = clamp((g.tally||0)-1, 0, g.target||0);
-      await saveState(state); renderBoss();
+      if ((g.tally||0) <= 0) return;
+      // reverse points ONLY if we had granted for that increment (tally>0 and within target)
+      const withinTarget = (g.tally||0) <= (g.target||0);
+      g.tally = Math.max(0, (g.tally||0) - 1);
+      if (withinTarget) {
+        const pts = bossPointsForGoal(g);
+        await reversePoints(pts, 'boss', bossLogKey(g, g.tally+1)); // reverse last increment
+      } else {
+        await saveState(state);
+      }
+      renderBoss(); renderHeader(); renderCompletedFeed(); renderStats(); renderCalendar();
     });
+
     plus.addEventListener("click", async()=>{
-      g.tally = clamp((g.tally||0)+1, 0, g.target||0);
-      await saveState(state); renderBoss();
+      const next = (g.tally||0) + 1;
+      g.tally = next;
+      // award points for increments up to target
+      if (next <= (g.target||0)) {
+        const pts = bossPointsForGoal(g);
+        await grantPoints(pts, g.label, 'boss', bossLogKey(g, next));
+      } else {
+        await saveState(state);
+      }
+      // visuals
+      renderBoss(); renderHeader(); renderCompletedFeed(); renderStats(); renderCalendar();
     });
+
     ctr.appendChild(minus); ctr.appendChild(num); ctr.appendChild(plus);
 
-    top.appendChild(label); top.appendChild(meta);
     row.appendChild(top); row.appendChild(bar); row.appendChild(ctr);
     goalsWrap.appendChild(row);
   }
 }
-function drawBossRing(canvas, pct){
-  if(!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const W=canvas.width, H=canvas.height; const cx=W/2, cy=H/2, r=Math.min(W,H)/2-14;
-  ctx.clearRect(0,0,W,H);
-  ctx.lineWidth=14; ctx.strokeStyle="#1b2347"; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke();
-  const grad=ctx.createLinearGradient(0,0,W,H); grad.addColorStop(0,"#5B8CFF"); grad.addColorStop(1,"#B85CFF");
-  const start=-Math.PI/2; const end=start+(Math.PI*2)*(pct/100);
-  ctx.strokeStyle=grad; ctx.beginPath(); ctx.arc(cx,cy,r,start,end); ctx.stroke();
-  ctx.fillStyle="rgba(230,233,242,.85)"; ctx.font="24px system-ui, -apple-system, Segoe UI, Roboto";
-  ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(`${pct}%`, cx, cy);
+
+// helper: points awarded per boss increment (falls back to 10)
+function bossPointsForGoal(g){
+  const ids = g.linkedTaskIds || [];
+  const task = state.library.find(t=> ids.includes(t.id));
+  return clamp(task?.points ?? 10, 1, 999);
 }
+// helper: unique log id per goal + increment index (so we can undo reliably)
+function bossLogKey(g, n){ return `${g.id}#${n}`; }
+
 
 /* ---------- Completed feed ---------- */
 function renderCompletedFeed(){
   const wrap=$("#feedToday"); wrap.innerHTML="";
   const day = state.today.day;
-  const items = state.logs.filter(l=>l.day===day && (l.type==='todo'||l.type==='habit'||l.type==='challenge'||l.type==='library'));
+  const items = state.logs.filter(l=>
+    l.day===day && (l.type==='todo'||l.type==='habit'||l.type==='challenge'||l.type==='library'||l.type==='boss')
+  );
   if(items.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="Nothing completed yet. Tap the + to get started."; wrap.appendChild(d); return; }
   for(const log of items){
     const row=document.createElement("div"); row.className="feed-item";
     const left=document.createElement("div"); left.className="feed-left";
     const title=document.createElement("div"); title.className="feed-title"; title.textContent=log.name;
     const sub=document.createElement("div"); sub.className="feed-sub";
-    const map = {todo:"Task",habit:"Habit",challenge:"Challenge",library:"Quick Task"};
+    const map = {todo:"Task",habit:"Habit",challenge:"Challenge",library:"Quick Task",boss:"Boss"};
     sub.textContent = `${map[log.type]||"Item"} • +${log.points} pts`;
     left.appendChild(title); left.appendChild(sub);
     const right=document.createElement("div"); right.className="feed-right";
@@ -787,6 +821,7 @@ function renderCompletedFeed(){
     wrap.appendChild(row);
   }
 }
+
 async function undoLogEntry(log){
   if (log.day!==state.today.day){ toast("Can only undo today"); return; }
   if (log.type==='todo'){
@@ -800,10 +835,17 @@ async function undoLogEntry(log){
     await reversePoints(log.points, 'challenge', log.id);
   } else if (log.type==='library'){
     await reversePoints(log.points, 'library', log.id);
+  } else if (log.type==='boss'){
+    // find the goal and decrement tally if within target
+    const [goalId] = String(log.id).split("#");
+    const g = (state.weeklyBoss.goals||[]).find(x=>x.id===goalId);
+    if (g) g.tally = Math.max(0, (g.tally||0) - 1);
+    await reversePoints(log.points, 'boss', log.id);
   }
   await saveState(state);
-  renderHeader(); renderHome(); renderCalendar(); renderStats();
+  renderHeader(); renderHome(); renderCalendar(); renderStats(); renderBoss();
 }
+
 
 /* =========================
    Economy: points/coins
@@ -882,11 +924,13 @@ function closeQuickAdd(){ $("#drawerQuickAdd").classList.add("hidden"); }
 function qaShowTab(which){
   const tabLib=$("#qaTabLib"), tabToday=$("#qaTabToday");
   const viewLib=$("#qaViewLib"), viewToday=$("#qaViewToday");
-  const sel = (btn, on)=> btn.classList.toggle("is-selected", !!on);
-  sel(tabLib, which==="lib"); sel(tabToday, which==="today");
+  const setSel = (btn, on)=> { btn.classList.toggle("is-selected", !!on); btn.classList.toggle("ghost", !on); };
+  setSel(tabLib, which==="lib");
+  setSel(tabToday, which==="today");
   viewLib.classList.toggle("hidden", which!=="lib");
   viewToday.classList.toggle("hidden", which!=="today");
 }
+
 function renderQuickAdd(){
   const favRow=$("#quickFavsRow"), favWrap=$("#quickFavs"), grid=$("#quickTaskList");
   favWrap.innerHTML=""; grid.innerHTML="";
