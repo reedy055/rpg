@@ -1,15 +1,13 @@
-// app.js — v5.0
-// Major upgrades: today-only tasks, weekly boss auto-pick + +/- controls,
-// calendar day details drawer, stats "This Week" micro-chart, recurrence manager (CRUD),
-// weekday chips fixed, and heartbeat-based day/week rollover.
+// app.js — v5.1 (clean, consolidated)
+// Features: today-only tasks, weekly boss (Mon 00:00 reset, +/- with points),
+// calendar day details drawer, Quick-Add with clear tabs + weekday chips,
+// Recurring Tasks manager (CRUD + detach), stats week micro-chart, heartbeat rollover.
 
 import { loadState, saveState, clearAll, exportJSON, importJSON } from "./db.js";
 import { renderBarChart, renderWeekChart } from "./charts.js";
 import { confettiBurst } from "./effects.js";
 
-/* =========================
-   Utilities
-========================= */
+/* ============== Utilities ============== */
 const $ = (s, el=document)=>el.querySelector(s);
 const $$ = (s, el=document)=>Array.from(el.querySelectorAll(s));
 const fmt = n => new Intl.NumberFormat().format(n);
@@ -32,17 +30,15 @@ function toast(msg) {
 }
 function vibrate(ms=40){ try{ if(state.settings.haptics && navigator.vibrate) navigator.vibrate(ms); }catch{} }
 
-/* =========================
-   Default State v5 schema
-========================= */
+/* ============== Default State (v5 schema) ============== */
 function defaultStateV5(){
   return {
-    version: 50,
+    version: 51,
     settings: {
       dailyGoal: 60,
       pointsPerCoin: 100,
       haptics: true,
-      resetHour: 0,               // Midnight local
+      resetHour: 0,               // midnight local
       dailyChallengesCount: 3,
       bossTasksPerWeek: 5,
       bossTimesMin: 2,
@@ -60,8 +56,8 @@ function defaultStateV5(){
     },
 
     habits: [],                   // {id,name,type:"binary"|"counter",targetPerDay,pointsOnComplete,active}
-    todos: [],                    // today/dated only: {id,name,dueDay,points,done,ruleId?}
-    todoRules: [],                // recurrence rules: {id,name,points,recurrence:{freq:"weekly",byWeekday:number[]},anchorDay}
+    todos: [],                    // only today/future: {id,name,dueDay,points,done,ruleId?}
+    todoRules: [],                // {id,name,points,recurrence:{freq:"weekly",byWeekday:number[]},anchorDay}
 
     library: [],                  // {id,name,points,cooldownHours?,lastDoneAt?,active}
     challenges: [],               // {id,name,points,active}
@@ -71,7 +67,7 @@ function defaultStateV5(){
     powerHour: { active:false, endsAt:null },
 
     progress: {},                 // day -> { points, coinsEarned, tasksDone, habitsDone, challengesDone, missedTodos? }
-    logs: [],                     // {ts,type:'habit'|'todo'|'library'|'challenge'|'purchase', id,name, points?, cost?, day}
+    logs: [],                     // {ts,type:'habit'|'todo'|'library'|'challenge'|'boss'|'purchase', id,name, points?, cost?, day}
 
     weeklyBoss: {
       weekStartDay: null,         // Monday yyyy-mm-dd
@@ -83,41 +79,29 @@ function defaultStateV5(){
   };
 }
 
-/* =========================
-   Migration → v5
-========================= */
+/* ============== Migration ============== */
 function migrateToV5(old){
   if (!old) return defaultStateV5();
-  if (old.version >= 50) return old;
-
+  if (old.version >= 51) return old;
   const s = defaultStateV5();
 
-  // carry settings
   s.settings = { ...s.settings, ...(old.settings||{}) };
-
-  // carry simple
   s.profile = { coins: old.profile?.coins||0, bestStreak: old.profile?.bestStreak||0 };
   s.streak = { current: old.streak?.current||0 };
 
-  // today
   s.today.day = old.today?.day || todayStr();
   s.today.points = old.today?.points||0;
   s.today.unconvertedPoints = old.today?.unconvertedPoints||0;
   s.today.lastMilestone = old.today?.lastMilestone||0;
   s.today.habitsStatus = old.today?.habitsStatus||{};
 
-  // models
   s.habits = old.habits||[];
   s.todos = (old.todos||[]).map(t=>({ id:t.id||uuid(), name:t.name, dueDay:t.dueDay, points:t.points, done:!!t.done, ruleId:t.ruleId }));
   s.todoRules = (old.todoRules||[]).map(r=>{
-    const rec = r.recurrence||{};
-    let by = rec.byWeekday;
-    if (!by) {
-      if (rec.freq==="daily") by = [1,2,3,4,5,6,0];
-      else if (rec.freq==="weekly") by = rec.byWeekday || [];
-      else by = [];
-    }
-    return { id:r.id||uuid(), name:r.name, points:r.points, anchorDay:r.anchorDay||old.today?.day||todayStr(), recurrence:{ freq:"weekly", byWeekday: by } };
+    const by = r?.recurrence?.byWeekday
+      ? r.recurrence.byWeekday
+      : (r?.recurrence?.freq==="daily" ? [1,2,3,4,5,6,0] : []);
+    return { id:r.id||uuid(), name:r.name, points:r.points, anchorDay:r.anchorDay||s.today.day, recurrence:{ freq:"weekly", byWeekday: by } };
   });
   s.library = old.library||[];
   s.challenges = old.challenges||[];
@@ -128,27 +112,22 @@ function migrateToV5(old){
   s.progress = old.progress||{};
   s.logs = old.logs||[];
 
-  // boss
   s.weeklyBoss.weekStartDay = old.weeklyBoss?.weekStartDay || startOfISOWeek(s.today.day);
   s.weeklyBoss.goals = (old.weeklyBoss?.goals||[]).map(g=>({ id:g.id||uuid(), label:g.label, target:g.target||0, tally:g.tally||0, linkedTaskIds:g.linkedTaskIds||[] }));
   s.weeklyBoss.completed = !!old.weeklyBoss?.completed;
 
-  s.version = 50;
+  s.version = 51;
   return s;
 }
 
-/* =========================
-   Global state
-========================= */
+/* ============== Global ============== */
 let state = null;
 
-/* =========================
-   Boot
-========================= */
+/* ============== Boot ============== */
 window.addEventListener("DOMContentLoaded", init);
 
 async function init(){
-  // Basic nav shortcuts
+  // Pills
   $("#pillStreak")?.addEventListener("click", ()=> switchView("statsView"));
   $("#pillCoins")?.addEventListener("click", openShopDrawer);
 
@@ -161,8 +140,6 @@ async function init(){
   $("#btnAddChallenge").addEventListener("click", ()=> openChallengeModal());
   $("#btnAddShop").addEventListener("click", ()=> openShopItemModal());
   $("#btnBossReroll").addEventListener("click", ()=> rerollWeeklyBoss());
-
-  // Recurring Manager
   $("#btnAddRule").addEventListener("click", ()=> openRuleModal());
 
   // Preferences
@@ -179,12 +156,11 @@ async function init(){
   $("#fileImport").addEventListener("change", onImport);
   $("#btnWipe").addEventListener("click", onWipe);
 
-    // Calendar nav + Day Details drawer
+  // Calendar nav + Day Details drawer
   $("#calPrev").addEventListener("click", ()=> changeCalendarMonth(-1));
   $("#calNext").addEventListener("click", ()=> changeCalendarMonth(1));
   $("#calToday").addEventListener("click", ()=>{ calendarCursor = new Date(); renderCalendar(); });
   $("#drawerDayClose").addEventListener("click", closeDayDetails);
-  // NEW: close Day Details by tapping the dimmed backdrop
   $("#drawerDayDetails").addEventListener("click", (e)=>{ if(e.target.id==="drawerDayDetails") closeDayDetails(); });
 
   // Quick Add (+) drawer
@@ -192,21 +168,19 @@ async function init(){
   $("#drawerQuickClose").addEventListener("click", closeQuickAdd);
   $("#drawerQuickAdd").addEventListener("click", (e)=>{ if(e.target.id==="drawerQuickAdd") closeQuickAdd(); });
 
-  // Quick Add tabs and weekday chips
+  // Quick Add tabs + weekday chips (visible selection)
   $("#qaTabLib").addEventListener("click", ()=> qaShowTab("lib"));
   $("#qaTabToday").addEventListener("click", ()=> qaShowTab("today"));
   $$("#qaWeekdays .btn").forEach(b=>{
-    // CHANGE: toggle both classes + aria-pressed for clear visual feedback
     b.addEventListener("click", ()=>{
       b.classList.toggle("active");
       b.classList.toggle("is-selected");
       b.setAttribute("aria-pressed", b.classList.contains("active") ? "true" : "false");
+    });
+  });
+  $("#qaCreateTodoBtn").addEventListener("click", onCreateQuickTodo);
 
-  // Shop drawer
-  $("#drawerShopClose").addEventListener("click", closeShopDrawer);
-  $("#drawerShop").addEventListener("click", (e)=>{ if(e.target.id==="drawerShop") closeShopDrawer(); });
-
-  // Load, migrate, init day/week
+  // Load → migrate → init day/week → render
   const loaded = await loadState();
   state = migrateToV5(loaded);
 
@@ -215,19 +189,16 @@ async function init(){
   renderAll();
   await saveState(state);
 
-  // Live header update + heartbeat rollover
+  // Live header + heartbeat (minute checks)
   setInterval(()=> { renderHeader(); checkHeartbeat(); }, 1000);
 }
 
-/* =========================
-   Heartbeat rollover (minute resolution)
-========================= */
+/* ============== Heartbeat rollover ============== */
 let lastHeartbeatDay = todayStr();
 let lastHeartbeatWeek = startOfISOWeek(lastHeartbeatDay);
 function checkHeartbeat(){
-  // only do heavier checks once per minute
   const now = new Date();
-  if (now.getSeconds() !== 0) return;
+  if (now.getSeconds() !== 0) return; // once per minute
 
   const d = todayStr();
   if (d !== lastHeartbeatDay){
@@ -241,9 +212,7 @@ function checkHeartbeat(){
   }
 }
 
-/* =========================
-   Day & Week engines
-========================= */
+/* ============== Day & Week engines ============== */
 function ensureDayRollover(force=false){
   const gd = todayStr();
   if (!state.today.day) {
@@ -251,25 +220,19 @@ function ensureDayRollover(force=false){
     ensureDailyAssignments(true);
     generateRecurringTodosForDay(gd);
   } else if (gd !== state.today.day || force) {
-    // Evaluate yesterday for streak, archive/purge todos strictly
+    // Evaluate yesterday for streak (ALL habits must be done)
     const y = state.today.day;
     const yAllHabitsDone = areAllHabitsDoneForDay(y);
-    const hadActivity = (state.progress[y]?.points || 0) > 0 || yAllHabitsDone;
-
     if (yAllHabitsDone) {
       state.streak.current = (state.streak.current||0) + 1;
       state.profile.bestStreak = Math.max(state.profile.bestStreak||0, state.streak.current);
-    } else if (hadActivity) {
-      state.streak.current = 0;
     } else {
       state.streak.current = 0;
     }
 
-    // Purge outdated todos (we do NOT carry overdue into today)
+    // Purge past-due todos (no overdue carryover)
     let missed = 0;
-    for (const t of state.todos) {
-      if (t.dueDay < gd && !t.done) missed++;
-    }
+    for (const t of state.todos) if (t.dueDay < gd && !t.done) missed++;
     if (missed>0){
       const bucket = ensureProgressBucket(y);
       bucket.missedTodos = (bucket.missedTodos||0) + missed;
@@ -312,29 +275,24 @@ function ensureDailyAssignments(force=false){
 function generateRecurringTodosForDay(dayStr){
   const weekday = new Date(dayStr+"T00:00:00").getDay(); // 0..6 Sun..Sat
   for (const r of state.todoRules) {
-    const rec = r.recurrence||{};
-    if (rec.freq!=="weekly") continue;
-    if ((rec.byWeekday||[]).includes(weekday)) {
+    if (r.recurrence?.freq!=="weekly") continue;
+    if ((r.recurrence.byWeekday||[]).includes(weekday)) {
       const exists = state.todos.some(t=>t.ruleId===r.id && t.dueDay===dayStr);
       if (!exists) state.todos.push({ id:uuid(), name:r.name, dueDay:dayStr, points:r.points, done:false, ruleId:r.id });
     }
   }
 }
 
-/* =========================
-   Weekly Boss (auto-pick Mon 00:00)
-========================= */
+/* ============== Weekly Boss (Mon 00:00) ============== */
 function ensureWeeklyBoss(force=false){
   const today = state.today.day || todayStr();
   const weekStart = startOfISOWeek(today);
   if (!force && state.weeklyBoss.weekStartDay === weekStart && state.weeklyBoss.goals?.length) return;
 
-  const goals = buildWeeklyBossGoals();
   state.weeklyBoss.weekStartDay = weekStart;
-  state.weeklyBoss.goals = goals;
+  state.weeklyBoss.goals = buildWeeklyBossGoals();
   state.weeklyBoss.completed = false;
 }
-
 function buildWeeklyBossGoals(){
   const want = clamp(state.settings.bossTasksPerWeek ?? 5, 1, 10);
   const minT = clamp(state.settings.bossTimesMin ?? 2, 1, 14);
@@ -343,14 +301,12 @@ function buildWeeklyBossGoals(){
   const tasks = state.library.filter(t=>t.active!==false);
   if (tasks.length === 0) return [];
 
-  // simple fairness: prefer tasks used less last week
+  // prefer tasks used less last week
   const weekStart = startOfISOWeek(state.today.day || todayStr());
   const lastWeekDays = Array.from({length:7}, (_,i)=> addDaysStr(weekStart, -1 - i));
   const counts = new Map();
-  for (const l of state.logs) {
-    if (l.type!=="library") continue;
-    if (lastWeekDays.includes(l.day)) counts.set(l.id, (counts.get(l.id)||0) + 1);
-  }
+  for (const l of state.logs) if (l.type==="library" && lastWeekDays.includes(l.day)) counts.set(l.id, (counts.get(l.id)||0) + 1);
+
   const pool = tasks.slice().sort((a,b)=> (counts.get(a.id)||0) - (counts.get(b.id)||0));
   const chosen = [];
   const bag = pool.slice();
@@ -363,20 +319,22 @@ function buildWeeklyBossGoals(){
     return { id: uuid(), label: t.name, target: times, tally: 0, linkedTaskIds: [t.id] };
   });
 }
-
 async function rerollWeeklyBoss(){
-  const weekStart = startOfISOWeek(state.today.day || todayStr());
-  state.weeklyBoss.weekStartDay = weekStart;
+  state.weeklyBoss.weekStartDay = startOfISOWeek(state.today.day || todayStr());
   state.weeklyBoss.goals = buildWeeklyBossGoals();
   state.weeklyBoss.completed = false;
   await saveState(state);
   renderBoss(); renderBossManage();
   toast("Re-rolled boss for this week");
 }
+function bossPointsForGoal(g){
+  const ids = g.linkedTaskIds || [];
+  const task = state.library.find(t=> ids.includes(t.id));
+  return clamp(task?.points ?? 10, 1, 999);
+}
+function bossLogKey(g, n){ return `${g.id}#${n}`; }
 
-/* =========================
-   Render orchestrator
-========================= */
+/* ============== Render Orchestrator ============== */
 function renderAll(){
   renderHeader();
   renderHome();
@@ -385,9 +343,7 @@ function renderAll(){
   renderManage();
 }
 
-/* =========================
-   Header (points, coins, goal bar)
-========================= */
+/* ============== Header ============== */
 function renderHeader(){
   $("#statPoints").textContent = fmt(state.today.points||0);
   $("#statCoins").textContent = fmt(state.profile.coins||0);
@@ -409,7 +365,7 @@ function renderHeader(){
   header.classList.toggle("goal-met", pct >= 100);
   $("#todaysTasksCard")?.classList.toggle("success", pct >= 100);
 
-  // Label (plus power hour)
+  // Label + power hour
   let label = `${state.today.points||0} / ${goal} pts`;
   if (state.powerHour?.active && state.powerHour.endsAt) {
     const ms = Date.parse(state.powerHour.endsAt) - Date.now();
@@ -424,9 +380,7 @@ function renderHeader(){
   $("#goalText").textContent = label;
 }
 
-/* =========================
-   HOME
-========================= */
+/* ============== HOME ============== */
 function renderHome(){
   renderTodaysTasks();
   renderHabits();
@@ -435,7 +389,7 @@ function renderHome(){
   renderCompletedFeed();
 }
 
-/* ---------- Today’s Tasks (no overdue) ---------- */
+/* ---- Today’s Tasks ---- */
 function renderTodaysTasks(){
   const list = $("#todaysTasksList"); list.innerHTML="";
   const today = state.today.day;
@@ -449,13 +403,11 @@ function renderTodaysTasks(){
     for (const t of todays) list.appendChild(todoRow(t));
   }
 }
-
 function todoRow(t){
   const row = document.createElement("div"); row.className="todo-row"; if (t.done) row.classList.add("done");
   const left = document.createElement("div"); left.className="todo-left";
   const title = document.createElement("div"); title.className="todo-title"; title.textContent = t.name;
-  const sub = document.createElement("div"); sub.className="todo-sub";
-  sub.textContent = `${t.dueDay} • +${t.points} pts`;
+  const sub = document.createElement("div"); sub.className="todo-sub"; sub.textContent = `${t.dueDay} • +${t.points} pts`;
   left.appendChild(title); left.appendChild(sub);
 
   const right = document.createElement("div"); right.className="todo-right";
@@ -481,7 +433,6 @@ async function toggleTodoDone(t, rowEl){
   await saveState(state);
   renderHeader(); renderTodaysTasks(); renderCompletedFeed(); renderCalendar(); renderStats();
 }
-
 function openTodoModal(existing=null){
   const modal = $("#modal"); const mTitle=$("#modalTitle"); const mBody=$("#modalBody"); const ok=$("#modalOk");
   const cancel=$("#modalCancel"), close=$("#modalClose");
@@ -493,8 +444,7 @@ function openTodoModal(existing=null){
   const points = fieldNum("Points", existing?.points ?? 10, 1, 999);
   const due = fieldDate("Due date", existing?.dueDay || state.today.day);
 
-  // Recurrence control: show inline chips for new OR for editing rule via a button
-  let selectedDays = [];
+  // Recurrence chips
   const recWrap = document.createElement("div"); recWrap.className="form";
   const label = document.createElement("div"); label.className="muted"; label.textContent="Repeat on (optional)";
   const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -503,17 +453,17 @@ function openTodoModal(existing=null){
   for (let i=0;i<7;i++){
     const wd = (i+1)%7; // Mon=1..Sun=0
     const b=document.createElement("button"); b.type="button"; b.className="btn ghost small"; b.dataset.wd=String(wd); b.textContent=days[i];
-    b.addEventListener("click", ()=> b.classList.toggle("is-selected"));
+    b.addEventListener("click", ()=>{ b.classList.toggle("is-selected"); b.classList.toggle("active"); });
     chipEls.push(b); chips.appendChild(b);
   }
   recWrap.appendChild(label); recWrap.appendChild(chips);
 
-  // if editing instance linked to a rule, provide "Edit recurrence" + "Detach"
+  // If editing instance linked to a rule, allow editing rule or detaching
   let rule = null;
   if (existing?.ruleId){
     rule = state.todoRules.find(x=>x.id===existing.ruleId) || null;
     if (rule?.recurrence?.byWeekday?.length) {
-      for (const b of chipEls){ if (rule.recurrence.byWeekday.includes(parseInt(b.dataset.wd,10))) b.classList.add("is-selected"); }
+      for (const b of chipEls){ if (rule.recurrence.byWeekday.includes(parseInt(b.dataset.wd,10))) b.classList.add("is-selected","active"); }
     }
     const btnRow = document.createElement("div"); btnRow.className="row";
     const editRuleBtn=document.createElement("button"); editRuleBtn.className="btn ghost small"; editRuleBtn.textContent="Edit recurrence…";
@@ -537,9 +487,7 @@ function openTodoModal(existing=null){
 
     if (isEdit) {
       existing.name = n; existing.points = p; existing.dueDay = day;
-
-      // if chips selected, update/create a rule for this title
-      selectedDays = chipEls.filter(b=>b.classList.contains("is-selected")).map(b=>parseInt(b.dataset.wd,10));
+      const selectedDays = chipEls.filter(b=>b.classList.contains("is-selected")).map(b=>parseInt(b.dataset.wd,10));
       if (selectedDays.length){
         if (rule){
           rule.name = n; rule.points = p; rule.recurrence = { freq:"weekly", byWeekday: selectedDays };
@@ -553,12 +501,12 @@ function openTodoModal(existing=null){
       const todo = { id: uuid(), name:n, points:p, dueDay:day, done:false };
       state.todos.push(todo);
 
-      selectedDays = chipEls.filter(b=>b.classList.contains("is-selected")).map(b=>parseInt(b.dataset.wd,10));
+      const selectedDays = chipEls.filter(b=>b.classList.contains("is-selected")).map(b=>parseInt(b.dataset.wd,10));
       if (selectedDays.length){
-        const rule = { id: uuid(), name:n, points:p, recurrence:{freq:"weekly", byWeekday:selectedDays}, anchorDay: day };
-        state.todoRules.push(rule);
+        const newRule = { id: uuid(), name:n, points:p, recurrence:{freq:"weekly", byWeekday:selectedDays}, anchorDay: day };
+        state.todoRules.push(newRule);
         const wd = new Date(day+"T00:00:00").getDay();
-        if (selectedDays.includes(wd)) todo.ruleId = rule.id;
+        if (selectedDays.includes(wd)) todo.ruleId = newRule.id;
       }
     }
     await saveState(state);
@@ -571,7 +519,7 @@ function openTodoModal(existing=null){
   function closeModal(){ modal.classList.add("hidden"); }
 }
 
-/* ---------- Habits ---------- */
+/* ---- Habits ---- */
 function renderHabits(){
   const wrap = $("#habitsList"); wrap.innerHTML="";
   const active = state.habits.filter(h=>h.active!==false);
@@ -643,15 +591,12 @@ async function adjustHabitTally(h, delta, rowEl){
   }
   renderHeader(); renderHabits(); renderCompletedFeed(); renderCalendar(); renderStats();
 }
-
 function openHabitModal(existing=null){
-  const modal = $("#modal"); const mTitle=$("#modalTitle"); const mBody=$("#modalBody"); const ok=$("#modalOk");
-  const cancel=$("#modalCancel"), close=$("#modalClose");
-  const isEdit = !!existing;
-  mTitle.textContent = isEdit? "Edit Habit" : "Add Habit";
+  const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
+  const isEdit=!!existing; mTitle.textContent=isEdit?"Edit Habit":"Add Habit";
   mBody.innerHTML="";
 
-  const name = fieldText("Name", existing?.name || "");
+  const name=fieldText("Name", existing?.name || "");
   const typeWrap = document.createElement("label"); typeWrap.textContent="Type"; typeWrap.style.cssText="color:var(--muted);display:grid;gap:6px";
   const typeSel = document.createElement("select");
   typeSel.style.cssText="background:#0F1630;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:12px;font-size:16px";
@@ -665,7 +610,7 @@ function openHabitModal(existing=null){
   mBody.appendChild(name.wrap); mBody.appendChild(typeWrap); mBody.appendChild(target.wrap); mBody.appendChild(pts.wrap);
 
   ok.onclick = async ()=>{
-    const n = name.input.value.trim(); if(!n){ toast("Name required"); return; }
+    const n=name.input.value.trim(); if(!n){ toast("Name required"); return; }
     const item = existing || { id: uuid(), active:true };
     item.name = n; item.type = typeSel.value;
     item.targetPerDay = clamp(parseInt(target.input.value||"3",10), 1, 20);
@@ -674,12 +619,11 @@ function openHabitModal(existing=null){
     await saveState(state);
     closeModal(); renderHabits(); renderStats();
   };
-  cancel.onclick = closeModal; close.onclick = closeModal;
-  modal.classList.remove("hidden");
+  cancel.onclick = closeModal; close.onclick = closeModal; modal.classList.remove("hidden");
   function closeModal(){ modal.classList.add("hidden"); }
 }
 
-/* ---------- Challenges ---------- */
+/* ---- Daily Challenges ---- */
 function renderChallenges(){
   const list = $("#dailyList"); list.innerHTML="";
   const day = state.today.day;
@@ -715,7 +659,7 @@ async function toggleChallenge(ch, isDone, cardEl){
   renderHeader(); renderChallenges(); renderCompletedFeed(); renderCalendar(); renderStats(); renderBoss();
 }
 
-/* ---------- Weekly Boss (UI with +/-) ---------- */
+/* ---- Weekly Boss (UI with +/- and points) ---- */
 function renderBoss(){
   const ring = $("#bossRing"); const goalsWrap=$("#bossGoals"); goalsWrap.innerHTML="";
   const goals = state.weeklyBoss.goals || [];
@@ -732,29 +676,26 @@ function renderBoss(){
 
   for(const g of goals){
     const row=document.createElement("div"); row.className="boss-goal";
-    const reached = Math.min(g.tally||0, g.target||0) >= (g.target||0);
+    const clampT = Math.min(g.tally||0, g.target||0);
+    const reached = clampT >= (g.target||0);
     if (reached) row.classList.add("done");
 
     const top=document.createElement("div"); top.className="row";
     const label=document.createElement("div"); label.className="label"; label.textContent=g.label;
-    const meta=document.createElement("div"); meta.className="meta";
-    const clampT = Math.min(g.tally||0, g.target||0);
-    meta.textContent=`${clampT}/${g.target}`;
+    const meta=document.createElement("div"); meta.className="meta"; meta.textContent=`${clampT}/${g.target}`;
     top.appendChild(label); top.appendChild(meta);
 
     const bar=document.createElement("div"); bar.className="boss-bar";
     const fill=document.createElement("div"); fill.style.width = (g.target>0? Math.round((clampT/g.target)*100):0)+"%";
     bar.appendChild(fill);
 
-    // Use the same counter style as habits
-    const ctr=document.createElement("div"); ctr.className="counter";
+    const ctr=document.createElement("div"); ctr.className="counter"; // match other counters
     const minus=document.createElement("button"); minus.textContent="−";
     const num=document.createElement("div"); num.className="num"; num.textContent=String(clampT);
     const plus=document.createElement("button"); plus.textContent="+";
 
     minus.addEventListener("click", async()=>{
       if ((g.tally||0) <= 0) return;
-      // reverse points ONLY if we had granted for that increment (tally>0 and within target)
       const withinTarget = (g.tally||0) <= (g.target||0);
       g.tally = Math.max(0, (g.tally||0) - 1);
       if (withinTarget) {
@@ -769,14 +710,12 @@ function renderBoss(){
     plus.addEventListener("click", async()=>{
       const next = (g.tally||0) + 1;
       g.tally = next;
-      // award points for increments up to target
       if (next <= (g.target||0)) {
         const pts = bossPointsForGoal(g);
         await grantPoints(pts, g.label, 'boss', bossLogKey(g, next));
       } else {
         await saveState(state);
       }
-      // visuals
       renderBoss(); renderHeader(); renderCompletedFeed(); renderStats(); renderCalendar();
     });
 
@@ -786,18 +725,20 @@ function renderBoss(){
     goalsWrap.appendChild(row);
   }
 }
-
-// helper: points awarded per boss increment (falls back to 10)
-function bossPointsForGoal(g){
-  const ids = g.linkedTaskIds || [];
-  const task = state.library.find(t=> ids.includes(t.id));
-  return clamp(task?.points ?? 10, 1, 999);
+function drawBossRing(canvas, pct){
+  if(!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W=canvas.width, H=canvas.height; const cx=W/2, cy=H/2, r=Math.min(W,H)/2-14;
+  ctx.clearRect(0,0,W,H);
+  ctx.lineWidth=14; ctx.strokeStyle="#1b2347"; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke();
+  const grad=ctx.createLinearGradient(0,0,W,H); grad.addColorStop(0,"#5B8CFF"); grad.addColorStop(1,"#B85CFF");
+  const start=-Math.PI/2; const end=start+(Math.PI*2)*(pct/100);
+  ctx.strokeStyle=grad; ctx.beginPath(); ctx.arc(cx,cy,r,start,end); ctx.stroke();
+  ctx.fillStyle="rgba(230,233,242,.85)"; ctx.font="24px system-ui, -apple-system, Segoe UI, Roboto";
+  ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(`${pct}%`, cx, cy);
 }
-// helper: unique log id per goal + increment index (so we can undo reliably)
-function bossLogKey(g, n){ return `${g.id}#${n}`; }
 
-
-/* ---------- Completed feed ---------- */
+/* ---- Completed feed (includes boss) ---- */
 function renderCompletedFeed(){
   const wrap=$("#feedToday"); wrap.innerHTML="";
   const day = state.today.day;
@@ -821,7 +762,6 @@ function renderCompletedFeed(){
     wrap.appendChild(row);
   }
 }
-
 async function undoLogEntry(log){
   if (log.day!==state.today.day){ toast("Can only undo today"); return; }
   if (log.type==='todo'){
@@ -836,7 +776,6 @@ async function undoLogEntry(log){
   } else if (log.type==='library'){
     await reversePoints(log.points, 'library', log.id);
   } else if (log.type==='boss'){
-    // find the goal and decrement tally if within target
     const [goalId] = String(log.id).split("#");
     const g = (state.weeklyBoss.goals||[]).find(x=>x.id===goalId);
     if (g) g.tally = Math.max(0, (g.tally||0) - 1);
@@ -846,10 +785,7 @@ async function undoLogEntry(log){
   renderHeader(); renderHome(); renderCalendar(); renderStats(); renderBoss();
 }
 
-
-/* =========================
-   Economy: points/coins
-========================= */
+/* ============== Economy: points/coins ============== */
 function ensureProgressBucket(day){
   if(!state.progress[day]) state.progress[day]={ points:0, coinsEarned:0, tasksDone:0, habitsDone:0, challengesDone:0 };
   return state.progress[day];
@@ -909,9 +845,7 @@ async function reversePoints(points, type, id){
   await saveState(state);
 }
 
-/* =========================
-   QUICK ADD (Library + New Today’s Task)
-========================= */
+/* ============== QUICK ADD (Library + New Today’s Task) ============== */
 function openQuickAdd(){
   qaShowTab("lib");
   $("#qaTodoTitle").value = "";
@@ -930,7 +864,6 @@ function qaShowTab(which){
   viewLib.classList.toggle("hidden", which!=="lib");
   viewToday.classList.toggle("hidden", which!=="today");
 }
-
 function renderQuickAdd(){
   const favRow=$("#quickFavsRow"), favWrap=$("#quickFavs"), grid=$("#quickTaskList");
   favWrap.innerHTML=""; grid.innerHTML="";
@@ -986,9 +919,7 @@ async function onCreateQuickTodo(){
   toast("Added");
 }
 
-/* =========================
-   SHOP
-========================= */
+/* ============== SHOP ============== */
 function openShopDrawer(){ renderShopDrawer(); $("#drawerShop").classList.remove("hidden"); }
 function closeShopDrawer(){ $("#drawerShop").classList.add("hidden"); }
 function renderShopDrawer(){
@@ -1015,11 +946,10 @@ async function buyShopItem(item){
     state.powerHour.endsAt = new Date(Date.now() + 60*60*1000).toISOString();
     toast("Power Hour Active (+50% pts for 60m)");
   } else if (item.type==='streakRepair'){
-    // simple guard: repair yesterday only if streak reset to 0 today
     const y = addDaysStr(state.today.day, -1);
-    const hadActivity = (state.progress[y]?.points||0) > 0 || areAllHabitsDoneForDay(y);
-    if (!hadActivity) {
-      state.streak.current = Math.max(1, state.streak.current); // bump back
+    const hadAll = areAllHabitsDoneForDay(y);
+    if (!hadAll) {
+      state.streak.current = Math.max(1, state.streak.current); // repair baseline
       state.profile.bestStreak = Math.max(state.profile.bestStreak||0, state.streak.current);
       toast("Streak repaired");
     } else {
@@ -1031,9 +961,7 @@ async function buyShopItem(item){
   renderHeader(); closeShopDrawer();
 }
 
-/* =========================
-   MANAGE (Library / Challenges / Shop / Boss / Recurrence / Prefs)
-========================= */
+/* ============== MANAGE (Library / Challenges / Shop / Boss / Recurrence / Prefs) ============== */
 function renderManage(){
   renderLibraryAdmin();
   renderChallengesAdmin();
@@ -1041,7 +969,7 @@ function renderManage(){
   renderBossManage();
   renderRecurrenceAdmin();
 
-  // Preferences UI values
+  // Preferences inputs
   $("#inpDailyGoal").value = state.settings.dailyGoal||60;
   $("#inpPPC").value = state.settings.pointsPerCoin||100;
   $("#chkHaptics").checked = !!state.settings.haptics;
@@ -1194,11 +1122,12 @@ function renderRecurrenceAdmin(){
   const rules = state.todoRules||[];
   if (rules.length===0){ const d=document.createElement("div"); d.className="placeholder"; d.textContent="No recurrence rules yet."; el.appendChild(d); return; }
   const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const order = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   for(const r of rules){
     const row=document.createElement("div"); row.className="tile";
     const meta=document.createElement("div"); meta.className="meta";
     const t=document.createElement("div"); t.className="title"; t.textContent=r.name;
-    const wd=(r.recurrence?.byWeekday||[]).map(x=>dayNames[x]).sort((a,b)=>["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].indexOf(a)-["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].indexOf(b));
+    const wd=(r.recurrence?.byWeekday||[]).map(x=>dayNames[x]).sort((a,b)=>order.indexOf(a)-order.indexOf(b));
     const s=document.createElement("div"); s.className="sub"; s.textContent = `+${r.points} pts • ${wd.join(" ")||"no days set"}`;
     meta.appendChild(t); meta.appendChild(s);
     const actions=document.createElement("div"); actions.className="row";
@@ -1209,7 +1138,7 @@ function renderRecurrenceAdmin(){
       if (!confirm("Remove this recurrence rule? Future instances will stop generating.")) return;
       const id=r.id;
       state.todoRules = state.todoRules.filter(x=>x.id!==id);
-      // Detach existing instances that pointed to this rule (keep them)
+      // Detach existing instances (keep them)
       state.todos.forEach(t=>{ if (t.ruleId===id) t.ruleId=undefined; });
       await saveState(state); renderRecurrenceAdmin(); renderTodaysTasks();
     });
@@ -1217,7 +1146,6 @@ function renderRecurrenceAdmin(){
     row.appendChild(meta); row.appendChild(actions); el.appendChild(row);
   }
 }
-
 function openRuleModal(existing=null){
   const modal=$("#modal"), mTitle=$("#modalTitle"), mBody=$("#modalBody"), ok=$("#modalOk"); const cancel=$("#modalCancel"), close=$("#modalClose");
   const isEdit=!!existing; mTitle.textContent=isEdit?"Edit Recurring Task":"Add Recurring Task";
@@ -1230,8 +1158,8 @@ function openRuleModal(existing=null){
   for(let i=0;i<7;i++){
     const wd=(i+1)%7;
     const b=document.createElement("button"); b.type="button"; b.className="btn ghost small"; b.dataset.wd=String(wd); b.textContent=days[i];
-    if (existing?.recurrence?.byWeekday?.includes(wd)) b.classList.add("is-selected");
-    b.addEventListener("click", ()=> b.classList.toggle("is-selected"));
+    if (existing?.recurrence?.byWeekday?.includes(wd)) b.classList.add("is-selected","active");
+    b.addEventListener("click", ()=> { b.classList.toggle("is-selected"); b.classList.toggle("active"); });
     chipEls.push(b); chips.appendChild(b);
   }
   const daysWrap=document.createElement("div"); daysWrap.className="form"; const lab=document.createElement("div"); lab.className="muted"; lab.textContent="Repeat on"; daysWrap.appendChild(lab); daysWrap.appendChild(chips);
@@ -1247,12 +1175,12 @@ function openRuleModal(existing=null){
     const rec = { freq:"weekly", byWeekday: selected };
     if (isEdit){
       existing.name=n; existing.points=p; existing.recurrence=rec;
-      // Update today's instance if exists and ruleId matches
+      // Update today's instance if exists and linked
       state.todos.forEach(t=>{ if (t.ruleId===existing.id){ t.name=n; t.points=p; } });
     } else {
       const rule = { id:uuid(), name:n, points:p, recurrence:rec, anchorDay: state.today.day };
       state.todoRules.push(rule);
-      // create today's instance if today matches
+      // Create today's instance if today matches
       const wd = new Date(state.today.day+"T00:00:00").getDay();
       if (selected.includes(wd)) state.todos.push({ id:uuid(), name:n, dueDay:state.today.day, points:p, done:false, ruleId:rule.id });
     }
@@ -1263,9 +1191,7 @@ function openRuleModal(existing=null){
   function closeModal(){ modal.classList.add("hidden"); }
 }
 
-/* =========================
-   Preferences + Data
-========================= */
+/* ============== Preferences + Data ============== */
 async function onPrefChange(){
   state.settings.dailyGoal = clamp(parseInt($("#inpDailyGoal").value||"60",10), 10, 1000);
   state.settings.pointsPerCoin = clamp(parseInt($("#inpPPC").value||"100",10), 10, 1000);
@@ -1301,16 +1227,13 @@ async function onWipe(){
   await clearAll(); state=defaultStateV5(); state.today.day=todayStr(); ensureDailyAssignments(true); ensureWeeklyBoss(true); await saveState(state); renderAll(); toast("Wiped");
 }
 
-/* =========================
-   STATS
-========================= */
+/* ============== STATS ============== */
 function renderStats(){
-  // KPI build (inject container if missing)
+  // Insert KPI container if missing
   const statsView = $("#statsView");
   let kpis = statsView.querySelector(".kpis");
   if (!kpis) { kpis = document.createElement("div"); kpis.className = "kpis"; statsView.insertBefore(kpis, statsView.firstChild); }
 
-  // windows
   const goal = state.settings.dailyGoal || 60;
   const today = new Date(state.today.day + "T00:00:00");
   const curWeekStart = new Date(startOfISOWeek(isoDay(today)));
@@ -1320,7 +1243,7 @@ function renderStats(){
   const lastWeekTotal = sumWeek(prevWeekStart);
   const deltaPct = lastWeekTotal>0 ? Math.round(((thisWeekTotal - lastWeekTotal)/lastWeekTotal)*100) : (thisWeekTotal>0?100:0);
 
-  // 30d aggregates
+  // last 30 days
   const last30 = getLastNDays(30);
   let daysOverGoal = 0, sum30 = 0;
   for (const d of last30) {
@@ -1341,14 +1264,14 @@ function renderStats(){
   kpis.appendChild(kpi("Longest streak", `${fmt(state.profile.bestStreak||0)} days`, null));
   kpis.appendChild(kpi("Lifetime points", `${fmt(lifetime)} pts`, null));
 
-  // Streak card numbers
+  // Streak card meta
   $("#streakBig").textContent = fmt(state.streak.current||0);
   $("#bestStreak").textContent = fmt(state.profile.bestStreak||0);
   const last7 = getLastNDays(7);
   let cmp=0; for(const d of last7){ cmp += (state.progress[d]?.tasksDone||0) + (state.progress[d]?.habitsDone||0) + (state.progress[d]?.challengesDone||0); }
   $("#cmpWeek").textContent = fmt(cmp);
 
-  // "This Week" micro-chart values (Mon..Sun of current week)
+  // "This Week" bars (Mon..Sun of current week)
   const weekVals = [];
   for (let i=0;i<7;i++){ const dd=new Date(curWeekStart); dd.setDate(curWeekStart.getDate()+i); const key=isoDay(dd); weekVals.push(state.progress[key]?.points||0); }
   const wcv=$("#weekChart"); const wr=window.devicePixelRatio||1; wcv.style.width="100%"; const ww=wcv.clientWidth||600; const wh=160;
@@ -1357,13 +1280,13 @@ function renderStats(){
   const wd=$("#weekDelta"); wd.textContent = (deltaPct>=0?`▲ ${deltaPct}% vs last week`:`▼ ${Math.abs(deltaPct)}% vs last week`);
   wd.classList.toggle("pos", deltaPct>=0); wd.classList.toggle("neg", deltaPct<0);
 
-  // 30-day points bars
+  // 30-day bars
   const cvs=$("#bar30"); const r=window.devicePixelRatio||1; cvs.style.width="100%"; const w=cvs.clientWidth||600; const h=260;
   cvs.width=Math.floor(w*r); cvs.height=Math.floor(h*r); cvs.getContext("2d").setTransform(r,0,0,r,0,0);
   const vals = last30.map(d=> state.progress[d]?.points || 0);
   renderBarChart(cvs, vals);
 
-  // Per-habit 30d rows
+  // Per-habit 30-day rows
   renderHabitHistory(last30);
 
   function sumWeek(startDate){
@@ -1386,7 +1309,6 @@ function renderStats(){
   }
   function signed(n){ return (n>0?`+${n}%` : n<0? `${n}%` : "0%"); }
 }
-
 function renderHabitHistory(last30Days){
   const wrap=$("#habitHistory"); wrap.innerHTML="";
   const active = state.habits.filter(h=>h.active!==false);
@@ -1427,9 +1349,7 @@ function getLastNDays(n){
   return arr;
 }
 
-/* =========================
-   CALENDAR (month view + Day Details)
-========================= */
+/* ============== CALENDAR (month) ============== */
 let calendarCursor = new Date();
 function changeCalendarMonth(delta){
   calendarCursor.setMonth(calendarCursor.getMonth()+delta);
@@ -1501,7 +1421,7 @@ function openDayDetails(ds){
       const left=document.createElement("div"); left.className="feed-left";
       const title=document.createElement("div"); title.className="feed-title"; title.textContent=log.name;
       const sub=document.createElement("div"); sub.className="feed-sub";
-      const map = {todo:"Task",habit:"Habit",challenge:"Challenge",library:"Quick Task",purchase:"Purchase"};
+      const map = {todo:"Task",habit:"Habit",challenge:"Challenge",library:"Quick Task",purchase:"Purchase",boss:"Boss"};
       sub.textContent = `${map[log.type]||"Item"}${log.points?` • +${log.points} pts`: log.cost?` • -${log.cost} coins`:""}`;
       left.appendChild(title); left.appendChild(sub);
       row.appendChild(left); feed.appendChild(row);
@@ -1511,9 +1431,7 @@ function openDayDetails(ds){
 }
 function closeDayDetails(){ $("#drawerDayDetails").classList.add("hidden"); }
 
-/* =========================
-   View switching
-========================= */
+/* ============== View switching ============== */
 function switchView(id){
   const tabs=$$(".tabbar .tab"); const views=$$(".view");
   tabs.forEach(b=>{ const target=b.getAttribute("data-target"); b.classList.toggle("active", target===id); b.setAttribute("aria-selected", target===id?"true":"false"); });
@@ -1522,9 +1440,7 @@ function switchView(id){
   if (id==="calendarView") renderCalendar();
 }
 
-/* =========================
-   Form helpers
-========================= */
+/* ============== Form helpers ============== */
 function fieldText(label, val=""){
   const wrap=document.createElement("label"); wrap.textContent=label; wrap.style.display="grid"; wrap.style.gap="6px"; wrap.style.color="var(--muted)";
   const input=document.createElement("input"); input.type="text"; input.value=val; styleInput(input);
